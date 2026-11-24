@@ -2241,6 +2241,13 @@
       "when": 1795502055459,
       "tag": "0324_surface_link_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 322,
+      "version": "7",
+      "when": 1795502290242,
+      "tag": "0325_pairing_code",
+      "breakpoints": true
     }
   ]
 }

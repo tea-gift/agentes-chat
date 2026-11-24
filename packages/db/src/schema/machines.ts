@@ -484,6 +484,16 @@ export const machineDeviceCodes = pgTable(
     machineId: uuid(),
     /** The connect link the computer came with (`machine_connect_links`): only that link's maker may approve it. */
     linkId: uuid(),
+    /**
+     * The agent a chat-issued code (`issued_via = 'chat'`, ADR 0219) gives the computer to when it is redeemed;
+     * null: none named. A plain id, like `machine_id` here: the agent may be gone by redeem time.
+     */
+    targetAgentId: uuid(),
+    /**
+     * Who issued the code: `device` (the computer asked, ADR 0036 §5), `managed` (the workspace's provisioner,
+     * ADR 0056 §10), `chat` (a member minted it, ADR 0219). Only a `chat` code is redeemed by its short code.
+     */
+    issuedVia: text().notNull().default("device"),
     lastPolledAt: timestamp({ withTimezone: true }),
     decidedAt: timestamp({ withTimezone: true }),
     expiresAt: timestamp({ withTimezone: true }).notNull(),

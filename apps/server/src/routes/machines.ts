@@ -17,17 +17,20 @@ import {
   getDeviceCode,
   hostComputerState,
   hostKey,
+  issuePairingCode,
   listMachineOutages,
   listMachines,
   machineCliInstall,
   moveAgentsFromMachine,
   NotFoundError,
   openFilePull,
+  PairingCodeLimitError,
   PROVISIONING_REASONS,
   PROVISIONING_STATES,
   PROVISIONING_STEPS,
   pollDeviceToken,
   receiveMachineUpload,
+  redeemPairingCode,
   reduceMachineAccess,
   renameMachine,
   restoreHostComputer,
@@ -345,6 +348,27 @@ const DeviceCode = z
 
 const AgentParams = OrgParams.extend({ agentId: z.uuid() });
 
+/**
+ * A pairing code minted in the chat (ADR 0219): the short code, what it was
+ * minted for, and when it dies. No polling secret: the app never sees one,
+ * and neither does the mint (the computer gets it when it redeems the code).
+ */
+const PairingCode = z
+  .object({
+    userCode: z
+      .string()
+      .openapi({ example: "K7Q4ZP", description: "Shown as `K7Q·4ZP`: read it to the person at the computer." }),
+    orgId: z.uuid(),
+    targetAgentId: z
+      .uuid()
+      .nullable()
+      .openapi({ description: "The agent the code puts on the computer; null: none named." }),
+    targetAgentName: z.string().nullable(),
+    expiresAt: z.string(),
+    expiresIn: z.number().int().openapi({ description: "Seconds until it dies (10 minutes from the mint)." }),
+  })
+  .openapi("MachinePairingCode");
+
 const ComputerBrain = z.enum(["claude_code", "codex", "cursor", "opencode", "grok", "antigravity"]);
 const Platform = z.string().openapi({
   description: "`mac`, `windows`, `linux`, `other` (the workspace's own computer), or the runner's `os` as reported.",
@@ -573,6 +597,40 @@ export function machineAppRoutes(deps: AppDeps) {
       );
       if (!machine) return tooManyCodes(c);
       return c.json(machine, 201);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/organizations/{orgId}/machines/device-codes",
+      tags,
+      security,
+      summary:
+        "Mint a pairing code for the organization (members who can post; ADR 0219): a computer redeems it with `agentes-runner pair --code`",
+      description:
+        "The code is the credential: whoever holds it can connect a computer to this organization for 10 minutes, so read it only to the person at that computer. The answer carries no polling secret (the computer gets it when it redeems the code). With `agentId`, the computer becomes that agent's — only when the minter manages the agent, and only while it has no computer. 429 `machine.pairing_code_too_many` after 10 mints in an hour.",
+      request: {
+        params: OrgParams,
+        body: body(z.object({ agentId: z.uuid().nullish() }).strict()),
+      },
+      responses: {
+        201: json(PairingCode, "Minted"),
+        429: errorResponse("Too many pairing codes minted lately"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { orgId } = c.req.valid("param");
+      try {
+        const issued = await issuePairingCode({ db, pubsub }, c.get("user").id, orgId, c.req.valid("json"));
+        return c.json(issued, 201);
+      } catch (error) {
+        if (error instanceof PairingCodeLimitError) {
+          return apiError(c, 429, "machine.pairing_code_too_many", error.message);
+        }
+        throw error;
+      }
     },
   );
 
@@ -1079,6 +1137,19 @@ const DeviceBody = z.object({
   link: z.string().max(20).optional(),
 });
 
+/** A pairing code's redeem (ADR 0219): the short code and the computer's fingerprint — no reconnect, no link. */
+const DeviceRedeemBody = z.object({
+  userCode: z.string().min(6).max(16),
+  name: z.string().max(80).default(""),
+  os: z.string().max(20).default("other"),
+  arch: z.string().max(40).default(""),
+  hostname: z.string().max(200).default(""),
+  version: z.string().max(40).default(""),
+  protocol: z.number().int().optional(),
+  workspace: z.string().max(500).optional(),
+  exec: z.boolean().optional(),
+});
+
 const HostSyncBody = z.object({
   name: z.string().max(80).default(""),
   hostname: z.string().max(200).default(""),
@@ -1110,6 +1181,8 @@ const DEVICE_CODE_MISS_COST = 5;
 /** New codes per address per minute, and polls (every 3 s by contract: 20 a minute, with room for two computers). */
 const DEVICE_START_LIMIT = { limit: 10, windowMs: 60_000 };
 const DEVICE_POLL_LIMIT = { limit: 60, windowMs: 60_000 };
+/** Pairing-code redeems per address per 10 minutes (a guess a try, like the confirm page's per-address budget). */
+const DEVICE_REDEEM_LIMIT = { limit: 30, windowMs: 10 * 60_000 };
 
 /**
  * What the runner calls, with no session (ADR 0025, ADR 0036): the
@@ -1241,6 +1314,67 @@ export function registerMachinePublicRoutes(api: OpenAPIHono, deps: AppDeps) {
       const { ok: _ok, ...token } = result;
       const url = `${withoutTrailingSlashes(config.PUBLIC_URL)}/org/${token.org.id}/settings/devices/${token.machineId}`;
       return c.json({ ...token, url }, 200);
+    },
+  );
+
+  api.openapi(
+    createRoute({
+      method: "post",
+      path: "/machines/device/redeem",
+      tags,
+      summary:
+        "A computer redeems a pairing code minted in the chat (`agentes-runner pair --code`, ADR 0219): the short code and what it is, for the polling secret",
+      description:
+        "The secret goes out once, to the computer that held the short code; the app never sees it, and a second redeem finds nothing to claim. The machine is made here, with the named agent on it when it can take a computer; the computer then polls `…/device/token` with the secret for its token. 404 `machine.device_not_found` for an unknown, expired or already-used code.",
+      request: { body: body(DeviceRedeemBody) },
+      responses: {
+        200: json(
+          z
+            .object({
+              deviceCode: z
+                .string()
+                .openapi({ description: "Secret: only this computer keeps it, to poll `…/device/token`." }),
+              userCode: z.string().openapi({ example: "K7Q4ZP" }),
+              machineId: z.uuid(),
+              org: z.object({ id: z.uuid(), name: z.string() }),
+              targetAgent: z
+                .object({ id: z.uuid(), name: z.string() })
+                .nullable()
+                .openapi({ description: "The agent the code named; null when none was named, or it is gone." }),
+              assignedAgent: z.object({ id: z.uuid(), name: z.string() }).nullable().openapi({
+                description:
+                  "The agent now on this computer; null when none was named, or it couldn't take it (`assignmentSkipped`).",
+              }),
+              assignmentSkipped: z
+                .enum(["agent_not_found", "agent_archived", "agent_has_machine", "agent_right_hand", "agent_not_home"])
+                .nullable()
+                .openapi({
+                  description: "Why the named agent didn't get this computer; null when it did, or none was named.",
+                }),
+              expiresIn: z.number().int().openapi({ description: "Seconds left on the code: poll at once." }),
+              interval: z.number().int(),
+            })
+            .openapi("MachinePairingRedeem"),
+        ),
+        400: errorResponse("Invalid body or runner too old"),
+        404: errorResponse("Unknown, expired or already-used code (`machine.device_not_found`)"),
+        429: errorResponse("Too many redeems from this address"),
+      },
+    }),
+    async (c) => {
+      const ip = requestIp(c.req.raw.headers, config.TRUSTED_PROXIES);
+      const limit = await adapters.rateLimiter.consume(`machine-device-redeem:${limitIp(ip)}`, DEVICE_REDEEM_LIMIT);
+      if (!limit.allowed) return apiError(c, 429, "rate_limited", "Too many attempts. Try again in a few minutes.");
+      const { userCode, ...info } = c.req.valid("json");
+      try {
+        const redeemed = await redeemPairingCode({ db, pubsub: adapters.pubsub }, userCode, info, { ip });
+        return c.json(redeemed, 200);
+      } catch (error) {
+        if (error instanceof NotFoundError)
+          return apiError(c, 404, error.code ?? "machine.device_not_found", error.message);
+        if (error instanceof ValidationError) return apiError(c, 400, error.code, error.message);
+        throw error;
+      }
     },
   );
 

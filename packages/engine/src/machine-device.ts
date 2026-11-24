@@ -1,6 +1,7 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { type MachineOs, MIN_RUNNER_PROTOCOL, type PubSub } from "@agenteschat/adapters";
-import { and, count, type Database, eq, gt, inArray, isNull, schema } from "@agenteschat/db";
+import { and, count, type Database, eq, gt, inArray, isNull, or, schema } from "@agenteschat/db";
+import { managesAgent } from "./audience";
 import { recordAudit } from "./audit";
 import { caches } from "./cache";
 import type { DeviceAudience } from "./devices";
@@ -13,11 +14,13 @@ import {
   type MachineRow,
   type MachineView,
   machineView,
+  mayBeHome,
   publishMachineAgentsChanged,
   sha256Hex,
 } from "./machines";
 import { notifyMachineConnected } from "./notification-producers";
 import { can, getMembership, requireActiveMembership } from "./organizations";
+import { isRightHand, rightHandPermanent } from "./right-hand";
 import { closedRefusal } from "./standing";
 import { withoutTrailingSlashes } from "./url-text";
 
@@ -78,6 +81,25 @@ export class DeviceCodeLimitError extends Error {
     this.name = "DeviceCodeLimitError";
   }
 }
+
+/** Pairing codes one member may mint for one organization in an hour (the mint route answers 429). */
+export const PAIRING_CODE_MINTS_PER_HOUR = 10;
+
+/** Too many pairing codes minted lately (the mint route answers 429). */
+export class PairingCodeLimitError extends Error {
+  constructor() {
+    super("Too many pairing codes minted for this organization lately. Wait a while and try again.");
+    this.name = "PairingCodeLimitError";
+  }
+}
+
+/** Why a named agent didn't get the computer a pairing code redeemed. */
+export type PairingAssignmentSkipped =
+  | "agent_not_found"
+  | "agent_archived"
+  | "agent_has_machine"
+  | "agent_right_hand"
+  | "agent_not_home";
 
 /** `K7Q4ZP`: uniform over the alphabet (`randomInt` has no modulo bias). */
 export function generateUserCode() {
@@ -438,6 +460,7 @@ async function requirePairing(db: Database, actorId: string, orgId: string) {
       "machine.forbidden",
     );
   }
+  return membership;
 }
 
 /**
@@ -599,4 +622,367 @@ export async function denyDeviceCode(deps: DeviceDeps, actorId: string, userCode
     )
     .returning({ id: machineDeviceCodes.id });
   if (!denied) throw notFound();
+}
+
+// ---------------------------------------------------------------------------
+// Pairing codes minted in the chat (ADR 0219)
+// ---------------------------------------------------------------------------
+
+/**
+ * A pairing code minted in the chat (ADR 0219): a member who may pair
+ * computers asks the server for a short code for their organization, reads it
+ * to whoever sits at a computer, and that computer redeems it with
+ * `agentes-runner pair --code`. It is the device-code flow with the human
+ * confirm step moved to the mint: the code is born `confirmed` for its org,
+ * bound to whoever minted it and optionally to one agent, and lives
+ * `DEVICE_CODE_TTL_MS`. The computer trades the short code (plus what it is:
+ * its fingerprint) for the polling secret at redeem time; the secret itself
+ * is never returned to the web client, and the mint never sees it either —
+ * the row holds a hash of random bytes nobody was told.
+ *
+ * The mint is the trust boundary: only a member who may pair computers, at
+ * most `PAIRING_CODE_MINTS_PER_HOUR` an hour per organization, and the
+ * target agent only when the minter manages it. A code is single use (the
+ * redeem claims it by setting `machine_id`, where it was null), and guessing
+ * is bounded the same way as the confirm page: 6 characters over 31 symbols
+ * (~887M), a per-address budget on the redeem route, 10 minutes to live.
+ * A redeemed code behaves like a web-confirmed one from then on: the machine
+ * is made at redeem, the token is issued to the first poll, and a machine
+ * whose token is never collected is dropped on expiry.
+ */
+
+export interface IssuedPairingCode {
+  userCode: string;
+  orgId: string;
+  targetAgentId: string | null;
+  targetAgentName: string | null;
+  expiresAt: string;
+  expiresIn: number;
+}
+
+export interface RedeemedPairingCode {
+  /** The polling secret, returned once, to the computer that held the short code. Never shown in the app. */
+  deviceCode: string;
+  userCode: string;
+  machineId: string;
+  org: { id: string; name: string };
+  /** The agent the code named, as it stood at redeem time; null when none was named, or it is gone. */
+  targetAgent: { id: string; name: string } | null;
+  /** The agent now on this computer; null when none was named, or it couldn't take it (`assignmentSkipped`). */
+  assignedAgent: { id: string; name: string } | null;
+  assignmentSkipped: PairingAssignmentSkipped | null;
+  /** Seconds left on the code: poll at once. */
+  expiresIn: number;
+  interval: number;
+}
+
+/**
+ * A live code with this short code, if one exists: a pending device code, or
+ * a chat-issued code not redeemed yet. Minting draws again while one lives,
+ * so two live codes never share the characters (the partial unique index
+ * covers pending codes only).
+ */
+async function liveCodeWithUserCode(db: Database, userCode: string, now: Date) {
+  const [row] = await db
+    .select({ id: machineDeviceCodes.id })
+    .from(machineDeviceCodes)
+    .where(
+      and(
+        eq(machineDeviceCodes.userCode, userCode),
+        gt(machineDeviceCodes.expiresAt, now),
+        or(
+          eq(machineDeviceCodes.status, "pending"),
+          and(eq(machineDeviceCodes.status, "confirmed"), isNull(machineDeviceCodes.machineId)),
+        ),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * `POST …/organizations/{orgId}/machines/device-codes` (a signed-in member
+ * who may pair computers): a short code for the organization, optionally
+ * bound to one agent the minter manages. The code itself is the credential:
+ * the answer carries no polling secret, and the audit entry names no code.
+ */
+export async function issuePairingCode(
+  deps: DeviceDeps,
+  actorId: string,
+  orgId: string,
+  input: { agentId?: string | null } = {},
+): Promise<IssuedPairingCode> {
+  const membership = await requirePairing(deps.db, actorId, orgId);
+  let target: { id: string; name: string } | null = null;
+  if (input.agentId) {
+    const [agent] = await deps.db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.orgId, orgId)));
+    if (!agent || agent.archivedAt) throw new NotFoundError("Agent not found");
+    if (isRightHand(agent)) throw rightHandPermanent("given a computer");
+    if (!managesAgent(agent, actorId, membership)) {
+      throw new ForbiddenError("Only an admin or the agent's owner can choose its computer", "machine.forbidden");
+    }
+    if (!mayBeHome({ kind: "connected" })) {
+      throw new ForbiddenError(
+        "Agents live on the workspace computer here: a pairing code can't name one.",
+        "device.not_home",
+      );
+    }
+    target = agent;
+  }
+  const now = nowOf(deps);
+  const [minted] = await deps.db
+    .select({ n: count() })
+    .from(machineDeviceCodes)
+    .where(
+      and(
+        eq(machineDeviceCodes.issuedVia, "chat"),
+        eq(machineDeviceCodes.confirmedByUserId, actorId),
+        eq(machineDeviceCodes.orgId, orgId),
+        gt(machineDeviceCodes.createdAt, new Date(now.getTime() - 60 * 60_000)),
+      ),
+    );
+  if (Number(minted?.n ?? 0) >= PAIRING_CODE_MINTS_PER_HOUR) throw new PairingCodeLimitError();
+  const expiresAt = new Date(now.getTime() + DEVICE_CODE_TTL_MS);
+  for (let attempt = 0; ; attempt++) {
+    const userCode = generateUserCode();
+    if (await liveCodeWithUserCode(deps.db, userCode, now)) {
+      if (attempt >= 4) throw new Error("could not draw a free pairing code");
+      continue;
+    }
+    try {
+      // The polling secret's hash: random bytes nobody was told (redeem
+      // rotates the secret before handing it out, so this hash is never used).
+      const [row] = await deps.db
+        .insert(machineDeviceCodes)
+        .values({
+          orgId,
+          issuedVia: "chat",
+          deviceCodeHash: sha256Hex(randomBytes(32).toString("base64url")),
+          userCode,
+          status: "confirmed",
+          name: "",
+          os: "other",
+          arch: "",
+          hostname: "",
+          runnerVersion: "",
+          ...(target ? { targetAgentId: target.id } : {}),
+          requesterIp: "",
+          confirmedByUserId: actorId,
+          decidedAt: now,
+          expiresAt,
+          createdAt: now,
+        })
+        .returning({ id: machineDeviceCodes.id });
+      if (!row) throw new Error("pairing code insert returned nothing");
+      await recordAudit(deps.db, {
+        orgId,
+        actor: { type: "person", id: actorId },
+        action: "machine.pairing_code_issued",
+        target: { type: "organization", id: orgId },
+        // Never the code itself: the audit log is read by the organization's members.
+        details: {
+          ...(target ? { agentId: target.id, agentName: target.name } : {}),
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+      return {
+        userCode,
+        orgId,
+        targetAgentId: target?.id ?? null,
+        targetAgentName: target?.name ?? null,
+        expiresAt: expiresAt.toISOString(),
+        expiresIn: DEVICE_CODE_TTL_MS / 1000,
+      };
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt >= 4) throw error;
+    }
+  }
+}
+
+/** The computer's half of a pairing code: its self-report, as for `POST /api/machines/device`. */
+export type RedeemPairingCodeInput = Omit<DeviceStartInput, "previousMachineId" | "previousToken">;
+
+/**
+ * `POST /api/machines/device/redeem` (no session): a computer trades a valid
+ * short code and its fingerprint for the polling secret. The machine is made
+ * now (kind `connected`, paired by whoever minted the code), the named agent
+ * is put on it when it can take a computer, and the secret goes out once:
+ * the claim sets `machine_id` where it was null, so a second redeem finds
+ * nothing to claim. The computer then polls `…/device/token` with the
+ * secret, exactly like a web-confirmed code.
+ */
+export async function redeemPairingCode(
+  deps: DeviceDeps,
+  userCode: string,
+  input: RedeemPairingCodeInput,
+  requester: DeviceRequester,
+): Promise<RedeemedPairingCode> {
+  if (input.protocol !== undefined && input.protocol < MIN_RUNNER_PROTOCOL) {
+    throw new ValidationError("This runner is too old. Download the latest one.", "machine.outdated");
+  }
+  const now = nowOf(deps);
+  const code = normalizeUserCode(userCode);
+  if (code.length !== USER_CODE_LENGTH) throw notFound();
+  const [row] = await deps.db
+    .select()
+    .from(machineDeviceCodes)
+    .where(
+      and(
+        eq(machineDeviceCodes.userCode, code),
+        eq(machineDeviceCodes.issuedVia, "chat"),
+        eq(machineDeviceCodes.status, "confirmed"),
+        isNull(machineDeviceCodes.machineId),
+        gt(machineDeviceCodes.expiresAt, now),
+      ),
+    )
+    .orderBy(machineDeviceCodes.createdAt)
+    .limit(1);
+  if (!row?.orgId || !row.confirmedByUserId) throw notFound();
+  // Narrowed once here: property narrowing does not survive into the transaction's closure.
+  const orgId = row.orgId;
+  const minterId = row.confirmedByUserId;
+  const targetAgentId = row.targetAgentId;
+  const [org] = await deps.db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, orgId));
+  if (!org) throw notFound();
+  const [target] = targetAgentId
+    ? await deps.db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, targetAgentId), eq(agents.orgId, orgId)))
+    : [];
+  // The polling secret: fresh random bytes, whose hash replaces the placeholder the mint stored.
+  const deviceCode = randomBytes(32).toString("base64url");
+  const ip = requester.ip.slice(0, 100);
+  const claimed = await deps.db.transaction(async (tx) => {
+    const name = cleanMachineName(input.name) || input.hostname.slice(0, 80) || "Computer";
+    const [machine] = await tx
+      .insert(machines)
+      .values({
+        orgId,
+        kind: "connected",
+        name,
+        pairedByUserId: minterId,
+        hostname: input.hostname.slice(0, 200),
+        os: OSES.find((o) => o === input.os) ?? "other",
+        arch: input.arch.slice(0, 40),
+        runnerVersion: input.version.slice(0, 40),
+        ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
+        ...(input.workspace !== undefined ? { workspace: input.workspace.slice(0, 500) } : {}),
+        ...(input.exec !== undefined ? { execAllowed: input.exec } : {}),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    if (!machine) throw new Error("machine insert returned nothing");
+    const [codeRow] = await tx
+      .update(machineDeviceCodes)
+      .set({
+        deviceCodeHash: sha256Hex(deviceCode),
+        machineId: machine.id,
+        name: cleanMachineName(input.name),
+        os: OSES.find((o) => o === input.os) ?? "other",
+        arch: input.arch.slice(0, 40),
+        hostname: input.hostname.slice(0, 200),
+        runnerVersion: input.version.slice(0, 40),
+        ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
+        ...(input.workspace !== undefined ? { workspace: input.workspace.slice(0, 500) } : {}),
+        ...(input.exec !== undefined ? { execAllowed: input.exec } : {}),
+        requesterIp: ip,
+        approxLocation: requester.approxLocation?.slice(0, 120) || null,
+      })
+      .where(
+        and(
+          eq(machineDeviceCodes.id, row.id),
+          eq(machineDeviceCodes.status, "confirmed"),
+          isNull(machineDeviceCodes.machineId),
+        ),
+      )
+      .returning({ id: machineDeviceCodes.id });
+    // Another redeem claimed it first: the machine above rolls back with this.
+    if (!codeRow) throw new Error("pairing code already redeemed");
+    let assigned: { id: string; name: string } | null = null;
+    let skipped: PairingAssignmentSkipped | null = null;
+    if (targetAgentId) {
+      const [agent] = await tx
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, targetAgentId), eq(agents.orgId, orgId)));
+      if (!agent) skipped = "agent_not_found";
+      else if (agent.archivedAt) skipped = "agent_archived";
+      else if (isRightHand(agent)) skipped = "agent_right_hand";
+      else if (agent.machineId) skipped = "agent_has_machine";
+      else if (!mayBeHome({ kind: "connected" })) skipped = "agent_not_home";
+      else {
+        const [moved] = await tx
+          .update(agents)
+          .set({ machineId: machine.id, updatedAt: now })
+          .where(
+            and(eq(agents.id, agent.id), eq(agents.orgId, orgId), isNull(agents.machineId), isNull(agents.archivedAt)),
+          )
+          .returning({ id: agents.id, name: agents.name });
+        if (moved) assigned = moved;
+        else skipped = "agent_has_machine";
+      }
+    }
+    return { machine, assigned, skipped };
+  });
+  const { machine, assigned, skipped } = claimed;
+  const where = {
+    name: machine.name,
+    hostname: machine.hostname,
+    os: machine.os,
+    arch: machine.arch,
+    ip,
+    ...(requester.approxLocation ? { location: requester.approxLocation } : {}),
+  };
+  await recordAudit(deps.db, {
+    orgId,
+    actor: { type: "person", id: minterId },
+    action: "machine.connected",
+    target: { type: "machine", id: machine.id },
+    details: where,
+  });
+  if (assigned) {
+    caches.agents.delete(`${orgId}:${assigned.id}`);
+    await recordAudit(deps.db, {
+      orgId,
+      actor: { type: "person", id: minterId },
+      action: "agent.computer_target",
+      target: { type: "agent", id: assigned.id },
+      details: { from: null, to: machine.id, name: machine.name },
+    });
+    await publishOrgEvent(deps.pubsub, {
+      type: "org.broadcast",
+      orgId,
+      event: {
+        type: "agent.computer",
+        agentId: assigned.id,
+        target: { kind: "machine", machineId: machine.id, name: machine.name, online: false },
+      },
+    });
+    await publishMachineAgentsChanged(deps.pubsub, orgId);
+  }
+  await publishOrgEvent(deps.pubsub, {
+    type: "org.broadcast",
+    orgId,
+    event: { type: "machine.paired", machineId: machine.id, name: machine.name },
+  });
+  await notifyMachineConnected(deps, machine, minterId).catch(() => undefined);
+  return {
+    deviceCode,
+    userCode: row.userCode,
+    machineId: machine.id,
+    org: { id: org.id, name: org.name },
+    targetAgent: target ? { id: target.id, name: target.name } : null,
+    assignedAgent: assigned,
+    assignmentSkipped: skipped,
+    expiresIn: Math.max(0, Math.floor((row.expiresAt.getTime() - now.getTime()) / 1000)),
+    interval: DEVICE_POLL_INTERVAL_S,
+  };
 }

@@ -106,6 +106,62 @@ test("connecting over HTTP: code, confirm page, confirm, the token once; errors 
   expect((await runnerPost("/api/machines/pair", { code: "AAAA-BBBB" })).status).toBe(404);
 });
 
+test("pairing codes minted in the chat: mint, redeem, poll; no secret in the mint", async () => {
+  const { owner, api, orgId, agentId } = await start();
+  const minted = await api("/machines/device-codes", { json: { agentId } });
+  expect(minted.status).toBe(201);
+  const code = (await minted.json()) as {
+    userCode: string;
+    orgId: string;
+    targetAgentId: string;
+    targetAgentName: string;
+    expiresIn: number;
+  };
+  expect(code).toMatchObject({ orgId, targetAgentId: agentId, expiresIn: 600 });
+  expect(code.userCode).toMatch(/^[A-Z0-9]{6}$/);
+  expect("deviceCode" in code).toBe(false);
+
+  // A minted code never answers the confirm page: it is confirmed already.
+  expect((await owner(`/api/app/machines/device/${code.userCode}`)).status).toBe(404);
+
+  const redeemed = await runnerPost("/api/machines/device/redeem", { userCode: code.userCode, ...RUNNER });
+  expect(redeemed.status).toBe(200);
+  const grant = (await redeemed.json()) as {
+    deviceCode: string;
+    machineId: string;
+    assignedAgent: { id: string; name: string } | null;
+    assignmentSkipped: string | null;
+  };
+  expect(grant.assignedAgent?.id).toBe(agentId);
+  expect(grant.assignmentSkipped).toBeNull();
+  expect(grant.deviceCode).toBeTruthy();
+
+  const token = await runnerPost("/api/machines/device/token", { deviceCode: grant.deviceCode });
+  expect(token.status).toBe(200);
+  const body = (await token.json()) as { token: string; machineId: string };
+  expect(body.machineId).toBe(grant.machineId);
+  expect(body.token).toStartWith("agm_");
+
+  // A second redeem finds nothing to claim, and an unknown code is a 404 too.
+  expect((await runnerPost("/api/machines/device/redeem", { userCode: code.userCode, ...RUNNER })).status).toBe(404);
+  expect((await runnerPost("/api/machines/device/redeem", { userCode: "AAAAAA", ...RUNNER })).status).toBe(404);
+
+  // The new routes are in the OpenAPI document.
+  const doc = (await (await t.app.request("/api/openapi.json")).json()) as { paths: Record<string, unknown> };
+  expect(doc.paths["/app/organizations/{orgId}/machines/device-codes"]).toBeDefined();
+  expect(doc.paths["/machines/device/redeem"]).toBeDefined();
+});
+
+test("minting pairing codes: the 11th in an hour is a 429", async () => {
+  const { api } = await start();
+  for (let n = 0; n < 10; n++) {
+    expect((await api("/machines/device-codes", { json: {} })).status).toBe(201);
+  }
+  const limited = await api("/machines/device-codes", { json: {} });
+  expect(limited.status).toBe(429);
+  expect(((await limited.json()) as { error: { code: string } }).error.code).toBe("machine.pairing_code_too_many");
+});
+
 test("where each workspace gets its own computer the agents read so, and one with none waits for it", async () => {
   const asked: ModelRequest[] = [];
   t = await createTestServer({

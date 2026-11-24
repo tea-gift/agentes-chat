@@ -13,10 +13,15 @@ import {
   formatUserCode,
   LINK_INVALID,
   movedFrom,
+  normalizePairingCode,
   orgSlug,
+  type PairingCodeGrant,
   PairingError,
+  pairingAssignmentNote,
+  pairWithCode,
   pollDeviceToken,
   redeemIssuedCode,
+  redeemPairingCode,
   requestDeviceCode,
   takeEnrollCode,
   uniqueWorkspace,
@@ -165,6 +170,184 @@ test("an issued code that expired, was used or was withdrawn says so, never quot
     expect((err as Error).message).not.toContain(ISSUED);
   }
 });
+
+/** A pairing code minted in the chat (ADR 0219): redeem it with the short code, then poll with the issued secret. */
+test("a pairing code: redeem with the short code and the fingerprint, then the token", async () => {
+  const calls: { url: string; body: unknown }[] = [];
+  const fetch: FetchFn = async (url, init) => {
+    calls.push({ url, body: JSON.parse(String(init.body)) });
+    if (url.endsWith("/api/machines/device/redeem")) {
+      return json(200, {
+        deviceCode: "dc_secret",
+        userCode: "K7Q4ZP",
+        machineId: "m1",
+        org: { id: "o1", name: "Acme" },
+        targetAgent: { id: "a1", name: "Dev" },
+        assignedAgent: { id: "a1", name: "Dev" },
+        assignmentSkipped: null,
+        expiresIn: 590,
+        interval: 3,
+      });
+    }
+    return json(200, GRANT);
+  };
+  const sleeps: number[] = [];
+  const { grant, redeemed } = await pairWithCode(
+    SERVER,
+    "K7Q4ZP",
+    { name: "Notebook", os: "darwin", arch: "arm64", hostname: "nb", version: "0.9.0" },
+    { fetch, sleep: async (ms) => void sleeps.push(ms) },
+  );
+  expect(grant).toEqual(GRANT);
+  expect(redeemed).toMatchObject({
+    deviceCode: "dc_secret",
+    machineId: "m1",
+    targetAgent: { id: "a1", name: "Dev" },
+    assignedAgent: { id: "a1", name: "Dev" },
+    assignmentSkipped: null,
+    expiresIn: 590,
+    interval: 3,
+  });
+  expect(calls).toEqual([
+    {
+      url: `${SERVER}/api/machines/device/redeem`,
+      body: { userCode: "K7Q4ZP", name: "Notebook", os: "darwin", arch: "arm64", hostname: "nb", version: "0.9.0" },
+    },
+    { url: `${SERVER}/api/machines/device/token`, body: { deviceCode: "dc_secret" } },
+  ]);
+  expect(sleeps).toEqual([3000]);
+  expect(pairingAssignmentNote(redeemed)).toBe("Agent Dev will run on this computer.");
+});
+
+test("a pairing code that expired or was used says to mint a new one, never quoting the code", async () => {
+  const info = { os: "linux", arch: "x64", hostname: "box", version: "1" };
+  const gone = await redeemPairingCode(SERVER, "K7Q4ZP", info, {
+    fetch: async () =>
+      json(404, { error: { code: "machine.device_not_found", message: "This code is unknown or expired." } }),
+  }).catch((e: unknown) => e);
+  expect(gone).toBeInstanceOf(PairingError);
+  expect(gone).toMatchObject({ code: "expired" });
+  expect((gone as Error).message).toContain("Mint a new one in the chat");
+  expect((gone as Error).message).not.toContain("K7Q4ZP");
+
+  const limited = await redeemPairingCode(SERVER, "K7Q4ZP", info, {
+    fetch: async () => json(429, {}),
+  }).catch((e: unknown) => e);
+  expect(limited).toMatchObject({ code: "network" });
+});
+
+test("the pairing note says who runs on the computer, or why nobody does", () => {
+  const base: PairingCodeGrant = {
+    deviceCode: "dc",
+    userCode: "K7Q4ZP",
+    machineId: "m1",
+    org: { id: "o1", name: "Acme" },
+    targetAgent: null,
+    assignedAgent: null,
+    assignmentSkipped: null,
+    expiresIn: 590,
+    interval: 3,
+  };
+  expect(
+    pairingAssignmentNote({
+      ...base,
+      targetAgent: { id: "a1", name: "Dev" },
+      assignedAgent: { id: "a1", name: "Dev" },
+    }),
+  ).toBe("Agent Dev will run on this computer.");
+  expect(
+    pairingAssignmentNote({
+      ...base,
+      targetAgent: { id: "a1", name: "Dev" },
+      assignmentSkipped: "agent_has_machine",
+    }),
+  ).toBe("Agent Dev already has a computer, so this one stays without an agent.");
+  expect(
+    pairingAssignmentNote({
+      ...base,
+      targetAgent: { id: "a1", name: "Dev" },
+      assignmentSkipped: "agent_archived",
+    }),
+  ).toBe("Agent Dev is archived, so this computer stays without an agent.");
+  expect(pairingAssignmentNote(base)).toBeNull();
+  expect(pairingAssignmentNote({ ...base, assignmentSkipped: "agent_not_found" })).toBe(
+    "The agent the code named is gone, so this computer stays without an agent.",
+  );
+  expect(normalizePairingCode("k7q·4zp")).toBe("K7Q4ZP");
+  expect(normalizePairingCode("too-long-code")).toBeNull();
+  expect(normalizePairingCode("K7Q4")).toBeNull();
+});
+
+/** `agentes-runner pair --code` as a computer runs it, against a server that answers `answer` for each path. */
+async function pairCode(answer: (path: string) => Response) {
+  const dir = tempDir("pair-code-");
+  dirs.push(dir);
+  const seen: { path: string; body: unknown }[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (req) => {
+      seen.push({ path: new URL(req.url).pathname, body: await req.json() });
+      return answer(new URL(req.url).pathname);
+    },
+  });
+  try {
+    const home = path.join(dir, "home");
+    const args = ["pair", "--server", server.url.origin, "--code", "K7Q4ZP", "--home", home];
+    const proc = Bun.spawn([process.execPath, RUNNER, ...args, "--dir", path.join(dir, "work")], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { seen, exit, stdout, stderr, output: stdout + stderr, config: path.join(home, "config.json") };
+  } finally {
+    server.stop(true);
+  }
+}
+
+test("pair --code connects: the token in the config, the agent named, the secret nowhere", async () => {
+  const r = await pairCode((path) =>
+    path.endsWith("/redeem")
+      ? json(200, {
+          deviceCode: "dc_secret",
+          userCode: "K7Q4ZP",
+          machineId: "m1",
+          org: { id: "o1", name: "Acme" },
+          targetAgent: { id: "a1", name: "Dev" },
+          assignedAgent: { id: "a1", name: "Dev" },
+          assignmentSkipped: null,
+          expiresIn: 590,
+          interval: 1,
+        })
+      : json(200, GRANT),
+  );
+  expect(r.exit).toBe(0);
+  expect(r.seen).toHaveLength(2);
+  expect(r.seen[0]).toMatchObject({ path: "/api/machines/device/redeem", body: { userCode: "K7Q4ZP" } });
+  expect(r.seen[1]).toEqual({ path: "/api/machines/device/token", body: { deviceCode: "dc_secret" } });
+  const text = readFileSync(r.config, "utf8");
+  expect(JSON.parse(text)).toMatchObject({ token: GRANT.token, machineId: "m1", name: "Notebook", orgId: "o1" });
+  expect(text).not.toContain("dc_secret");
+  expect(r.output).toContain('Connected to Acme as "Notebook"');
+  expect(r.output).toContain("Agent Dev will run on this computer.");
+  expect(r.output).not.toContain("dc_secret");
+}, 20_000);
+
+test("pair --code with an expired code: a clear error, nothing written", async () => {
+  const r = await pairCode((path) =>
+    path.endsWith("/redeem")
+      ? json(404, { error: { code: "machine.device_not_found", message: "This code is unknown or expired." } })
+      : json(400, { error: "expired_token" }),
+  );
+  expect(r.exit).toBe(1);
+  expect(r.output).toContain("The pairing code expired or was already used. Mint a new one in the chat.");
+  expect(r.output).not.toContain("K7Q4ZP");
+  expect(existsSync(r.config)).toBe(false);
+}, 20_000);
 
 test("the enrollment file is removed once read, also when it holds no code", () => {
   const dir = tempDir("enroll-");

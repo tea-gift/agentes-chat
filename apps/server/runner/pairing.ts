@@ -367,6 +367,136 @@ export async function redeemIssuedCode(
   }
 }
 
+/**
+ * A pairing code minted in the chat (ADR 0219): the short code and this
+ * computer's fingerprint for the polling secret, and what the code does with
+ * an agent. The secret goes nowhere else: the mint never returns it, and the
+ * app never sees it.
+ */
+export interface PairingCodeGrant {
+  deviceCode: string;
+  userCode: string;
+  machineId: string;
+  org: { id: string; name: string };
+  /** The agent the code named; null when none was named, or it is gone. */
+  targetAgent: { id: string; name: string } | null;
+  /** The agent now on this computer; null when none was named, or it couldn't take it (`assignmentSkipped`). */
+  assignedAgent: { id: string; name: string } | null;
+  assignmentSkipped: string | null;
+  /** Seconds left on the code: poll at once. */
+  expiresIn: number;
+  /** Seconds between polls. */
+  interval: number;
+}
+
+/** A pairing code as typed (`K7Q4ZP`, `k7q·4zp`): the 6 characters, upper case; null when it isn't one. */
+export function normalizePairingCode(code: string): string | null {
+  const c = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return c.length === 6 ? c : null;
+}
+
+/**
+ * Redeems a pairing code (`POST /api/machines/device/redeem`): the short
+ * code and this computer's fingerprint for the polling secret. A code that
+ * expired or was already used fails with a message about minting a new one,
+ * never quoting the code.
+ */
+export async function redeemPairingCode(
+  server: string,
+  userCode: string,
+  info: DeviceInfo,
+  opts: { fetch?: FetchFn; signal?: AbortSignal } = {},
+): Promise<PairingCodeGrant> {
+  const fetchFn: FetchFn = opts.fetch ?? ((u, i) => fetch(u, i));
+  const res = await postJson(fetchFn, `${server}/api/machines/device/redeem`, { userCode, ...info }, opts.signal);
+  if (!res.ok) {
+    if (res.status === 404 || errorWord(res.json) === "machine.device_not_found") {
+      throw new PairingError("expired", "The pairing code expired or was already used. Mint a new one in the chat.");
+    }
+    throw new PairingError(
+      res.status === 429 ? "network" : "internal",
+      errorMessage(res.json) ??
+        (res.status === 429
+          ? "Too many attempts. Try again in a few minutes."
+          : `The server refused the pairing code (HTTP ${res.status})`),
+    );
+  }
+  const d = res.json as Partial<PairingCodeGrant> | null;
+  const named = (v: unknown) => {
+    if (typeof v !== "object" || v === null) return null;
+    const id = (v as { id?: unknown }).id;
+    const name = (v as { name?: unknown }).name;
+    return typeof id === "string" && typeof name === "string" ? { id, name } : null;
+  };
+  const num = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback);
+  if (
+    !d ||
+    typeof d.deviceCode !== "string" ||
+    typeof d.machineId !== "string" ||
+    !d.org ||
+    typeof d.org.id !== "string"
+  ) {
+    throw new PairingError("internal", "The server's answer was not understood");
+  }
+  const skipped = typeof d.assignmentSkipped === "string" ? d.assignmentSkipped : null;
+  return {
+    deviceCode: d.deviceCode,
+    userCode: typeof d.userCode === "string" ? d.userCode.replace(/[^A-Za-z0-9]/g, "").toUpperCase() : userCode,
+    machineId: d.machineId,
+    org: { id: d.org.id, name: String(d.org.name ?? "") },
+    targetAgent: named(d.targetAgent),
+    assignedAgent: named(d.assignedAgent),
+    assignmentSkipped: skipped,
+    expiresIn: num(d.expiresIn, 600),
+    interval: num(d.interval, 3),
+  };
+}
+
+/** The whole flow with a minted code: redeem it, then poll for the token with the issued secret. */
+export async function pairWithCode(
+  server: string,
+  userCode: string,
+  info: DeviceInfo,
+  opts: Parameters<typeof pollDeviceToken>[2] = {},
+): Promise<{ grant: DeviceGrant; redeemed: PairingCodeGrant }> {
+  const redeemed = await redeemPairingCode(server, userCode, info, opts);
+  const grant = await pollDeviceToken(
+    server,
+    {
+      deviceCode: redeemed.deviceCode,
+      userCode: redeemed.userCode,
+      verificationUrl: "",
+      expiresIn: redeemed.expiresIn,
+      interval: redeemed.interval,
+    },
+    opts,
+  );
+  return { grant, redeemed };
+}
+
+/** What the computer says about the agent the code named: who runs on it, or why nobody does. Null: no agent was named. */
+export function pairingAssignmentNote(redeemed: PairingCodeGrant): string | null {
+  if (redeemed.assignedAgent) return `Agent ${redeemed.assignedAgent.name} will run on this computer.`;
+  if (redeemed.targetAgent) {
+    switch (redeemed.assignmentSkipped) {
+      case "agent_has_machine":
+        return `Agent ${redeemed.targetAgent.name} already has a computer, so this one stays without an agent.`;
+      case "agent_archived":
+        return `Agent ${redeemed.targetAgent.name} is archived, so this computer stays without an agent.`;
+      case "agent_right_hand":
+        return "The team's right hand can't be given a computer, so this one stays without an agent.";
+      case "agent_not_home":
+        return "Agents live on the workspace computer here, so this one stays without an agent.";
+      default:
+        return `Agent ${redeemed.targetAgent.name} wasn't given this computer, so it stays without an agent.`;
+    }
+  }
+  if (redeemed.assignmentSkipped === "agent_not_found") {
+    return "The agent the code named is gone, so this computer stays without an agent.";
+  }
+  return null;
+}
+
 /** `Ação & Cia` → `acao-cia`. */
 export function orgSlug(name: string): string {
   const slug = name

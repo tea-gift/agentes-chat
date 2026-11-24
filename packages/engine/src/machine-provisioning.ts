@@ -413,6 +413,7 @@ export async function issueManagedMachine(
     await supersedeCodes(tx, row.id, now);
     await tx.insert(machineDeviceCodes).values({
       orgId,
+      issuedVia: "managed",
       deviceCodeHash: sha256Hex(enrollCode),
       userCode: generateUserCode(),
       status: "confirmed",

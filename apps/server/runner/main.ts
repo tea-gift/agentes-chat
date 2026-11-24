@@ -81,7 +81,11 @@ import {
   formatUserCode,
   LINK_CODE,
   movedFrom,
+  normalizePairingCode,
+  type PairingCodeGrant,
   PairingError,
+  pairingAssignmentNote,
+  pairWithCode,
   redeemIssuedCode,
   takeEnrollCode,
   whoCanUse,
@@ -110,6 +114,10 @@ Usage:
   agentes-runner pair --server <url> --enroll-file <path> [--dir <workspace>] [--name <name>] [--no-exec]
       Connects with a code issued for this computer by whoever provisions it. Nobody confirms it.
       The file is removed as soon as it is read.
+  agentes-runner pair --server <url> --code <code> [--dir <workspace>] [--name <name>] [--no-exec]
+      Connects with a pairing code minted in the chat for an organization (Settings > Devices, or
+      asked for in a conversation). Nobody confirms it: whoever minted the code already did. With
+      an agent named on the code, that agent runs on this computer.
   agentes-runner pair --server <url> --link <code> [--dir <workspace>] [--name <name>] [--no-exec]
       Connects with the code of a link made under Settings > Devices (what curl <server>/i/<code> | sh
       runs). The link's maker lets this computer join, or says no.
@@ -296,7 +304,7 @@ const isHostComputer = (stored: StoredConfig | null) => stored?.mode === "system
  */
 async function pair(p: Parsed): Promise<number> {
   const usage =
-    "Usage: agentes-runner pair --server <url> [--enroll-file <path> | --link <code>] [--dir <workspace>] [--name <name>] [--no-exec] [--new]";
+    "Usage: agentes-runner pair --server <url> [--enroll-file <path> | --link <code> | --code <code>] [--dir <workspace>] [--name <name>] [--no-exec] [--new]";
   const term = createTerm();
   term.intro("connect this computer");
   // Typed wide: the code's callback sets it, and TypeScript would keep it narrowed to null.
@@ -321,10 +329,13 @@ async function pair(p: Parsed): Promise<number> {
     return refuse("--link takes the code at the end of the link (like 7KQ2-M9XD)");
   }
   if (link !== undefined && enrollCode) return refuse("--link and --enroll-file each connect this computer: use one");
-  if (p.flags.has("code")) {
-    return refuse(
-      "Pairing codes from the site are gone: run agentes-runner pair --server <url> and confirm the code it shows.",
-    );
+  // A pairing code minted in the chat (ADR 0219): 6 characters, no confirm step — whoever minted it already did.
+  const code = p.flags.has("code") ? (flagString(p, "code") ?? "") : undefined;
+  if (code !== undefined && enrollCode) return refuse("--code and --enroll-file each connect this computer: use one");
+  if (code !== undefined && link !== undefined) return refuse("--code and --link each connect this computer: use one");
+  const shortCode = code === undefined ? undefined : (normalizePairingCode(code) ?? undefined);
+  if (code !== undefined && !shortCode) {
+    return refuse("--code takes the 6-character pairing code from the chat (like K7Q4ZP)");
   }
   const serverRaw = flagString(p, "server");
   if (!serverRaw) return refuse(usage);
@@ -348,10 +359,17 @@ async function pair(p: Parsed): Promise<number> {
   // Looked at while the person confirms, so the first connection already says what this computer builds with.
   const toolchains = probeToolchains().catch(() => null);
   let grant: DeviceGrant;
+  let pairing: PairingCodeGrant | undefined;
   try {
     if (enrollCode) {
       wait = term.spin("Connecting with the code issued for this computer");
       grant = await redeemIssuedCode(server, enrollCode, { signal: ac.signal });
+    } else if (shortCode) {
+      // A minted code is a fresh computer: no reconnect, and nobody confirms it.
+      wait = term.spin("Connecting with the pairing code from the chat");
+      const paired = await pairWithCode(server, shortCode, deviceInfo(name, undefined), { signal: ac.signal });
+      grant = paired.grant;
+      pairing = paired.redeemed;
     } else {
       grant = await devicePair(
         server,
@@ -390,6 +408,8 @@ async function pair(p: Parsed): Promise<number> {
         return 130;
       }
       if (enrollCode) return refuse(err.message);
+      // A pairing code's refusals already say what to do (mint a new one); the code itself is never in them.
+      if (shortCode) return refuse(err.message);
       if (link && err.code === "denied")
         return refuse("The link's maker didn't let this computer join. Nothing changed.");
       if (link && err.code === "expired") {
@@ -433,6 +453,11 @@ async function pair(p: Parsed): Promise<number> {
   if (who && grant.url) {
     term.info(`${who} Change it on its page:`);
     term.command(grant.url);
+  }
+  // A pairing code may name an agent for this computer: say which one runs on it, or why none does.
+  if (pairing) {
+    const note = pairingAssignmentNote(pairing);
+    if (note) term.info(note);
   }
   // Agents run as this OS user unless each has its own (system mode), so other people's read this user's files.
   if (who && grant.audience !== "owner" && next.mode !== "system" && exec) {
