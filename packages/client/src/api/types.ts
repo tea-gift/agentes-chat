@@ -1005,6 +1005,12 @@ export interface Agent {
    * workspace allows. Absent: on (the default).
    */
   mediaReplies?: boolean;
+  /**
+   * Lightweight prompt mode: its runs use a short system prompt instead of the platform's full "How you work" +
+   * "How to reply" blocks, and skip the capabilities/team blocks. Intended for simple DM chat bots on small models
+   * or tight token budgets. Absent: off (the default).
+   */
+  lightweightPrompt?: boolean;
   /** Its autonomy brakes (ADR 0131); absent from an older server (the defaults). */
   brakes?: AgentBrakes;
   /** How much it asks before acting (ADR 0173); absent from an older server (`risky`). */
@@ -1216,6 +1222,8 @@ export interface AgentInput {
   proposal?: string;
   /** Its stickers and GIFs after a light reply (ADR 0091); same permission as editing the agent. */
   mediaReplies?: boolean;
+  /** Lightweight prompt mode: a short system prompt instead of the platform's full rules; same permission as editing the agent. */
+  lightweightPrompt?: boolean;
   /** The Autonomia it starts with (the last setup's, ADR 0094): only an admin or its own owner sends it. */
   autonomy?: CommandApproval;
   /** Its autonomy brakes (ADR 0131); the fields given change. Same permission as editing the agent. */

@@ -1273,6 +1273,7 @@ function agentPatchOf(input: Partial<AgentInput>, agent: Agent): Partial<Agent> 
   if (input.editors !== undefined) patch.editors = input.editors;
   if (input.appearance !== undefined) patch.appearance = { ...agent.appearance, ...input.appearance };
   if (input.mediaReplies !== undefined) patch.mediaReplies = input.mediaReplies;
+  if (input.lightweightPrompt !== undefined) patch.lightweightPrompt = input.lightweightPrompt;
   if (input.brakes !== undefined) patch.brakes = { ...BRAKES_DEFAULTS, ...agent.brakes, ...input.brakes };
   // Null follows the workspace's level again: which one that is, the answer says.
   if (input.approvalsLevel) {

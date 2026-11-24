@@ -130,6 +130,12 @@ export interface AgentInput {
   autonomyBrakes?: Partial<AutonomySettings>;
   /** How much it asks before acting (ADR 0173): its own choice; null follows the workspace's. */
   approvalsLevel?: ApprovalsLevel | null;
+  /**
+   * Lightweight prompt mode: the agent's runs use a short system prompt (a few behaviour rules) instead of the
+   * platform's full "How you work" + "How to reply" blocks, and skip the capabilities/team blocks. Intended for
+   * simple DM chat bots on small models or tight token budgets; not for agents that act on the user's behalf.
+   */
+  lightweightPrompt?: boolean;
 }
 
 /**
@@ -992,6 +998,8 @@ export const agentView = (a: Agent) => ({
   appearance: (a.appearance ?? null) as AgentAppearance | null,
   /** It may follow a light reply with a sticker or a GIF (ADR 0091). */
   mediaReplies: a.mediaReplies,
+  /** Lightweight prompt mode: a short system prompt instead of the platform's full rules. */
+  lightweightPrompt: a.lightweightPrompt,
   /** A built-in agent the product ships (ADR 0137): `right_hand`, the team's right hand. Null for the others. */
   builtin: a.builtin ?? null,
   /** "Responde a" (ADR 0148 addendum): the agent it reports to; null = its owner, else its setor's lead. */

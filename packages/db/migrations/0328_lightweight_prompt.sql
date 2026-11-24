@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "lightweight_prompt" boolean DEFAULT false NOT NULL;

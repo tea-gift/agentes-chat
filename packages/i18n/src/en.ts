@@ -4142,6 +4142,11 @@ export const en = {
     ownAgents_one: "{{count}} agent has its own choice and won't change.",
     ownAgents_other: "{{count}} agents have their own choice and won't change.",
   },
+  /** Agent settings: the lightweight prompt switch on its page. */
+  lightweightPrompt: {
+    title: "Lightweight prompt",
+    help: "Its runs use a short system prompt instead of the full rules, for simple DM chat bots on small models or tight token budgets. Not for agents that act on your behalf.",
+  },
   /** Agent settings: what it may start that nobody asked for directly, and which agents it may call (ADR 0131). */
   brakes: {
     title: "Work nobody asked for",

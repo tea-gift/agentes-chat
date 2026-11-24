@@ -212,6 +212,10 @@ const AgentFields = z.object({
     description:
       "It may send a sticker or a GIF (ADR 0091): when someone asks for one, and after a light reply as often as the workspace's `agentMedia` allows; off: never. Like the other fields, editing it needs `manage_agents`. Default on.",
   }),
+  lightweightPrompt: z.boolean().optional().openapi({
+    description:
+      'Lightweight prompt mode: the agent\'s runs use a short system prompt (a few behaviour rules) instead of the platform\'s full "How you work" + "How to reply" blocks, and skip the capabilities/team blocks. Intended for simple DM chat bots on small models or tight token budgets; not for agents that act on the user\'s behalf. Like the other fields, editing it needs `manage_agents`. Default off.',
+  }),
   brakes: AgentBrakes.partial().optional().openapi({
     description: "Its autonomy brakes (ADR 0131); the fields given change, the rest stay. Needs `manage_agents`.",
   }),

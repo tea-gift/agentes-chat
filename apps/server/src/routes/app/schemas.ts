@@ -641,6 +641,10 @@ export const Agent = z
       description:
         "It may send a sticker or a GIF (ADR 0091): when someone asks for one, and after a light reply as often as the workspace's `agentMedia` allows.",
     }),
+    lightweightPrompt: z.boolean().openapi({
+      description:
+        'Lightweight prompt mode: its runs use a short system prompt instead of the platform\'s full "How you work" + "How to reply" blocks, and skip the capabilities/team blocks. Intended for simple DM chat bots on small models or tight token budgets.',
+    }),
     approvalsLevel: ApprovalsLevel,
     approvalsLevelOwn: z.boolean().optional().openapi({
       description:

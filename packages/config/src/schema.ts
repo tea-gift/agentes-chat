@@ -484,7 +484,7 @@ export const envVars = {
     section: "Agents",
   },
   AGENT_CONTEXT_MESSAGES: {
-    schema: z.coerce.number().int().min(1).max(500).default(30),
+    schema: z.coerce.number().int().min(1).max(500).default(10),
     description: "How many recent channel (or thread) messages are included in an agent's context.",
     section: "Agents",
   },

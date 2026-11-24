@@ -36,6 +36,7 @@ describe("loadConfig", () => {
     expect(config.AGENT_DEFAULT_MODEL).toBe("claude-sonnet-5-5");
     expect(config.ROUTER_MODEL).toBe("claude-haiku-5-5");
     expect(config.AGENT_MAX_HOPS).toBe(100);
+    expect(config.AGENT_CONTEXT_MESSAGES).toBe(10);
     expect(config.S3_PATH_STYLE).toBe(false);
     expect(config.MILLIONSEND_API_URL).toBe("https://api.millionsend.com");
     // Unset: the email senders use ping@ on the host of PUBLIC_URL.

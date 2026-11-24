@@ -271,6 +271,13 @@ export const agents = pgTable(
      * brain compacts past it, Claude Code and Codex compact there too. Null = the model's own window.
      */
     contextTokens: integer(),
+    /**
+     * Lightweight prompt mode: when on, the agent's runs use a short system prompt (a few behaviour rules) instead of
+     * the platform's full "How you work" + "How to reply" blocks, and skip the capabilities/team blocks. Intended for
+     * simple DM chat bots on small models or tight token budgets; not for agents that act on the user's behalf, which
+     * keep the full prompt and its safety rules.
+     */
+    lightweightPrompt: boolean().notNull().default(false),
     /** Sites its browser may open (ADR 0040, `*.example.com` matches the domain too); null = any site. */
     browserAllowedDomains: text().array(),
     /**

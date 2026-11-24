@@ -4019,6 +4019,11 @@ export const ptBR = {
     ownAgents_one: "{{count}} agente tem a própria escolha e não muda.",
     ownAgents_other: "{{count}} agentes têm a própria escolha e não mudam.",
   },
+  /** Configurações do agente: o interruptor de prompt leve na página dele. */
+  lightweightPrompt: {
+    title: "Prompt leve",
+    help: "As respostas dele usam um prompt curto em vez das regras completas, para bots de DM simples em modelos pequenos ou com pouco token. Não serve para agentes que agem por você.",
+  },
   /** Configurações do agente: o que ele pode começar sem ninguém pedir diretamente, e quais agentes pode chamar (ADR 0131). */
   brakes: {
     title: "Trabalho que ninguém pediu",

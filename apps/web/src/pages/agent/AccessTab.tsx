@@ -29,6 +29,7 @@ import { ApprovalRulesCard } from "./ApprovalRulesCard";
 import { ApprovalsLevelCard } from "./ApprovalsLevelCard";
 import { CardHead, ChangedTag, useAgentEdit, WasLine } from "./context";
 import { DatabaseAccessCard } from "./DatabaseAccess";
+import { LightweightPromptCard } from "./LightweightPromptCard";
 import { MailAccessCard } from "./MailAccess";
 import { ReadOnlyNote } from "./pieces";
 import { MergeReposBlock, ReposBlock } from "./Repos";
@@ -261,6 +262,7 @@ export function AccessTab({ part = "all" }: { part?: "all" | "basic" | "advanced
         </div>
         <div className="agp-col">
           {basic && <ApprovalsLevelCard />}
+          {basic && <LightweightPromptCard />}
           {advanced && <ApprovalRulesCard />}
           {advanced && (
             <Card
