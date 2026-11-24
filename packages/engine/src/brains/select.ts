@@ -39,10 +39,27 @@ import {
 } from "../right-hand";
 import { runnerUpdateWay } from "../runner-update";
 import type { AgentRun } from "../runs";
+import { surfaceBrainLinkForRun } from "../surfaces/brain";
 import { accountUnavailable, brainSessionId, claudeCodeAvailability, cliMissingMessage, toolOff } from "./claude-code";
-import { BRAIN_NAMES, BRAIN_PLAN_NAMES, type BrainAccount, type BrainKind, type BrainSession } from "./types";
+import {
+  BRAIN_NAMES,
+  BRAIN_PLAN_NAMES,
+  type BrainAccount,
+  type BrainKind,
+  type BrainSession,
+  isComputerBrain,
+} from "./types";
 
-const KINDS: readonly BrainKind[] = ["model", "claude_code", "codex", "cursor", "opencode", "grok", "antigravity"];
+const KINDS: readonly BrainKind[] = [
+  "model",
+  "claude_code",
+  "codex",
+  "cursor",
+  "opencode",
+  "grok",
+  "antigravity",
+  "surface",
+];
 const kindOf = (v: unknown): BrainKind => (KINDS.includes(v as BrainKind) ? (v as BrainKind) : "model");
 
 /** A mission's choice for a run in its thread (`missionTurnFor`). */
@@ -317,7 +334,8 @@ export async function storedPlanUsage(
   kind: BrainKind,
   accountId?: string,
 ): Promise<PlanUsage | null> {
-  if (kind === "model") return null;
+  // A surface brain has no machine and no plan usage: nothing to read.
+  if (!isComputerBrain(kind)) return null;
   const { machineAccounts, machines } = schema;
   if (accountId) {
     const [row] = await db
@@ -360,7 +378,8 @@ export function computerBrainUnavailable(
   /** The model the turn would run (`BrainPlan.model`): on a plan whose models have their own limits, its own counts. */
   model?: string,
 ): BrainUnavailability | null {
-  if (kind === "model") return null;
+  // A surface brain has no computer and no account: nothing to be unavailable.
+  if (!isComputerBrain(kind)) return null;
   const name = BRAIN_NAMES[kind];
   if (!machineId) return { code: "no_computer", message: `The agent has no computer for ${name}.` };
   // OpenCode's free tier on a computer nobody connected (ADR 0132): no sign-in, nobody's plan, any agent's.
@@ -819,6 +838,10 @@ export async function resolveBrain(
   const kind = brainFor(agent, run, mission);
   const base = mission ? { missionId: mission.missionId } : {};
   if (kind === "model") {
+    // A linked sender is this agent's brain (ADR 0187 addendum, "Muse as brain"): in a DM with the person who
+    // linked it, the sender writes the reply instead of any model. No computer, no session, no plan to check.
+    const brain = await surfaceBrainLinkForRun(deps.db, run, agent).catch(() => null);
+    if (brain) return { kind: "surface", ...base };
     const effort = brainEffortFor(agent, kind);
     return { kind, ...base, ...(effort ? { effort } : {}) };
   }

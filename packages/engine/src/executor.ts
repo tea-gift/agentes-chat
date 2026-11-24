@@ -414,6 +414,13 @@ import {
 import { billingHold, standingErrorDetail, standingRefusal } from "./standing";
 import { personAskedLately, rerootRun, runStretchOf } from "./stretch";
 import { isStuck, noteStep, STUCK_END_NOTE, STUCK_END_REPLY_NOTE, STUCK_NOTE, type StuckState } from "./stuck";
+import {
+  lastBrainRequest,
+  openBrainRequest,
+  queueSurfaceBrainRequest,
+  type SurfaceBrainReply,
+  surfaceBrainLinkForRun,
+} from "./surfaces/brain";
 import { archivedAgentsPrompt, FIND_AGENT_TOOL, renamedAgentsPrompt, teammateMeans } from "./team";
 import { linkRunChecks, runChecksForReply } from "./team-actions";
 import { carriesCredential, cliErrorWords, maskCredentials, maskCredentialsExcept, scrubSignIns } from "./tool-detail";
@@ -684,6 +691,8 @@ export interface Transcript {
    * before they went out, so each was rewritten with the rest instead of sent. At most `OVERTAKEN_MAX`.
    */
   overtaken?: number;
+  /** The linked Muse's answer to this run's brain request, waiting to be posted as the agent's reply (`surfaceBrainReply`). */
+  surfaceBrainReply?: SurfaceBrainReply;
   /** What replies once streamed counted their pieces with: read by nothing now, kept on old runs' transcripts. */
   deltaSeq?: number;
   /** Memory changes made by tools, not yet attached to a posted message (`meta.memoryUpdates`). */
@@ -3440,6 +3449,61 @@ async function executeRunInner(
         .set({ brain: brainPlan.kind })
         .where(and(eq(routineRuns.id, routineRunId), eq(routineRuns.orgId, run.orgId)));
     }
+  }
+  // A surface brain: the linked Muse writes the reply, not a model of ours. The run asks it once, parks until it
+  // answers (or the request times out), and posts its words as the agent's reply. No model call, no tools, no judge:
+  // the Muse's words go out as they are. Only a DM run reaches here (`surfaceBrainLinkForRun`).
+  if (brainPlan.kind === "surface") {
+    const t = transcript as Transcript;
+    const reply = t.surfaceBrainReply;
+    if (reply) {
+      // The linked Muse answered: post its words as the agent's reply and finish, the normal way (its notifications
+      // and delivery follow from the message itself).
+      delete t.surfaceBrainReply;
+      delete t.waitingForBrain;
+      const posted = await db.transaction(async (tx) => {
+        const m = await postAgentMessage(tx, run, workThread(), reply.text, { surfaceBrain: true });
+        t.postedUpTo = t.messages.length;
+        t.postedCount++;
+        await addRunStep(tx, run, "message", { messageId: m.id, surfaceBrain: true });
+        const done = await transitionRun(tx, run.id, "running", "done", {
+          replyMessageId: m.id,
+          error: null,
+          transcript: storedTranscript(t),
+        });
+        if (!done) throw new PermanentJobError("run changed state while executing");
+        return m;
+      });
+      const [view] = await withWikiLinks(db, run.orgId, [messageView(posted)]);
+      if (view) await publishMessageCreated(deps.pubsub, view);
+      await publishChannelEvent(deps.pubsub, event("done"));
+      await finished("done");
+      await redispatchPending("done");
+      return;
+    }
+    const park = async (waitId: string) => {
+      t.waitingForBrain = { kind: "surface", machineId: "", code: "surface_brain", waitId, at: Date.now() };
+      const moved = await transitionRun(db, run.id, "running", "waiting_input", { transcript: storedTranscript(t) });
+      if (!moved) throw new PermanentJobError("run changed state while executing");
+      await publishChannelEvent(deps.pubsub, event("waiting_input"));
+      await finished("waiting_input");
+    };
+    const link = await surfaceBrainLinkForRun(db, run, agent).catch(() => null);
+    if (!link) return fail("surface_brain_unlinked");
+    const open = await openBrainRequest(db, run.id);
+    if (open) {
+      // Already asked and still waiting (a resume that isn't the reply): park again on the same request.
+      await park(open.id);
+      return;
+    }
+    if (await lastBrainRequest(db, run.id)) {
+      // The request timed out (its fallback job woke this run): say so, and fail.
+      return fail("surface_brain_timeout");
+    }
+    const delivery = await queueSurfaceBrainRequest(deps, run, link);
+    if (!delivery) return fail("surface_brain_unreachable");
+    await park(delivery.id);
+    return;
   }
   // "Automático": the model and effort this run thinks with, the same decision mapped onto its brain (the
   // brain itself never changes). A resumed run keeps its choice; a run that couldn't ask is medium/medium.

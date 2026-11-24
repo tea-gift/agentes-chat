@@ -54,6 +54,11 @@ export interface SurfaceLinkView {
   /** The agent the link talks to; null: the workspace's right hand. */
   agentId: string | null;
   agentName: string | null;
+  /** This link's sender is the agent's brain (its replies come from the sender, not a model). */
+  brain: boolean;
+  /** A brain link's ntfy channel (server + topic); null on a link paired the usual way. */
+  ntfyServer: string | null;
+  ntfyTopic: string | null;
   createdAt: string;
   confirmedAt: string | null;
   /** Pending only: when it stops counting. */
@@ -451,17 +456,29 @@ async function viewsOf(db: Executor, where: SQL | undefined): Promise<SurfaceLin
     orgName: link.orgId ? orgName : null,
     agentId: link.agentId,
     agentName: link.agentId ? agentName : null,
+    brain: link.brain,
+    ntfyServer: link.ntfyServer,
+    ntfyTopic: link.ntfyTopic,
     createdAt: link.createdAt.toISOString(),
     confirmedAt: link.confirmedAt?.toISOString() ?? null,
     expiresAt: link.status === "pending" ? pendingExpiry(link.createdAt).toISOString() : null,
   }));
 }
 
-/** The account's links on this server's surface: active first, then pending ones that still count. */
+/** One link's view, for a route that just made it (a brain link, a confirm). Null when it is gone. */
+export async function linkView(db: Database, linkId: string): Promise<SurfaceLinkView | null> {
+  const [view] = await viewsOf(db, eq(surfaceLinks.id, linkId));
+  return view ?? null;
+}
+
+/** The account's links on this server's surface, plus its ntfy brain links: active first, then pending ones that still count. */
 export async function listLinks(db: Database, userId: string): Promise<SurfaceLinkView[]> {
   const surface = surfaceOn();
   if (!surface) return [];
-  return viewsOf(db, and(eq(surfaceLinks.userId, userId), eq(surfaceLinks.surface, surface.id)));
+  return viewsOf(
+    db,
+    and(eq(surfaceLinks.userId, userId), or(eq(surfaceLinks.surface, surface.id), eq(surfaceLinks.surface, "ntfy"))),
+  );
 }
 
 /** The sender's active link on this server's surface. */

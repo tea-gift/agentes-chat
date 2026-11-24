@@ -41,6 +41,7 @@ import {
   type MailDeps,
   type OutboxJob,
   pollMailWatches,
+  pollSurfaceBrainTopics,
   pollTelegramBots,
   postAutonomyDigests,
   pruneConfidential,
@@ -441,6 +442,12 @@ export function startWorkers(deps: WorkerDeps) {
       if (fired > 0) void ticks.get("outbox")?.();
     });
   }
+  // A linked Muse's reply to a brain request, read from its link's ntfy topic (ADR 0187 addendum): every 30 seconds,
+  // like the Telegram poll. A reply wakes its parked run, so the outbox is kicked when one lands.
+  every("surfaceBrainPoll", WORKER_INTERVALS_MS.telegramPoll, async () => {
+    const answered = await pollSurfaceBrainTopics({ db });
+    if (answered > 0) void ticks.get("outbox")?.();
+  });
   if (connectors) {
     // Threads' 60-day tokens no call renewed in time (ADR 0170 §3).
     every("connectorTokens", WORKER_INTERVALS_MS.connectorTokens, async () => {

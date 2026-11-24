@@ -137,3 +137,107 @@ agent 无关；工具限制对 agent 回合同样适用（安全默认）。
   （≥32 字符，与 operator token 不同）+ `SURFACE_NAME` + `SURFACE_OPEN_URL`，
   重启 agentes 容器；3001 只在内网，外部 bridge 服务要能连到它（跑同一台机器
   或内网）。
+
+---
+
+# Muse as brain（dev 分支，ntfy 频道就是连接）
+
+一个 agent 可以让外面一个 Muse 当它的脑子：有人给它发 DM，它的回复由那个 Muse
+来写，而不是自己的模型。连接就是 ntfy 服务器 + topic 名——跟 ntfy 本身一样：
+POST 到 topic 就是发，GET 轮询 topic 就是收。**没有认领码，topic 名本身就是共享
+密钥。** 壳是 bridge（配对、投递、把回复以 agent 的名义发出去），传输是 ntfy；
+不另起一套传输，不做同步 HTTP（不等 Muse 的回复超时）。
+
+## 连接：`POST /me/surface-links/ntfy-brain`
+
+Body `{ agentId, server, topic }`。server 必须是 http(s) URL，topic 是
+`[-A-Za-z0-9_]{1,64}`。链接**立刻生效**（没有确认步），surface 记为 `ntfy`，
+externalId/display = topic，`brain: true`。建链接时：
+
+- 替换同一人、同一 agent 的旧 ntfy 链接（一个 surface 一个 agent 一条 active 链接）；
+- 抹掉该 agent 在其他 surface 上的 brain 标记（一个 agent 只能有一个 brain）。
+- 校验：agent 存在（`surface.brain_no_agent`，404）、在调用者的工作区里
+  （`surface.brain_not_member`，403）；server/topic 不合法是 400
+  （`surface.brain_bad_server` / `surface.brain_bad_topic`）。
+- 仍需 bridge 已配置（`surfaceOn()` 门；未配 → `surface.off`，404）。
+
+UI：Settings › Notifications › Where they arrive 里多一行 "Connect a Muse as
+brain"，弹框选 agent、填 server 和 topic，Connect 即建；brain 链接在列表里单独
+显示（ntfy + topic + Unlink）。i18n en + pt-BR。
+
+## 请求：引擎 POST 到 topic
+
+DM 的 run 的 brain 解析到 `surface` 时（`packages/engine/src/surfaces/brain.ts`）：
+
+1. `queueSurfaceBrainRequest` 先 POST 再记账：生成 delivery id → POST 到
+   `{server}/{topic}`，标题 `[brain-request <deliveryId>]`，正文是 DM 最近 12 条
+   消息（上限 3500 字符）→ 再插 `surface_deliveries` 行（kind `brain_request`，
+   带 `runId`）+ 60 分钟后唤醒 run 的 fallback job。POST 失败或链接没 topic
+   → 返回 null，run 失败 `surface_brain_unreachable`。
+2. run 停在 `waiting_input` 等回复。`surface_deliveries` 的那行就是待处理请求的
+   记录和超时锚；**relay 不轮询 `/deliveries` 找 brain 请求**（那里不列它们，
+   `listSurfaceDeliveries` 排除了 `brain_request`）。
+
+## 回复：relay 转、服务器轮询 topic
+
+- relay（`~/workspace/muse-relay/relay.py`，`BRAIN_TOPICS` 环境变量，JSON 数组，
+  每建一个 brain link 加一项 `{"server", "topic"}`）：每 25 秒 GET
+  `{server}/{topic}/json?poll=1&since=…`，读到 `[brain-request <id>]` 就记下
+  `id → {server, topic}`（`state.json` 的 `brain_pending`），把请求原样发到
+  Ch1（标题不变）交给 Muse；Muse 在 Ch1 回 `[brain-reply <id>]`，relay 按
+  pending 表 POST 回原 topic。没记下的 id 的回复直接丢弃。
+- 服务器 `surfaceBrainPoll` worker 每 30 秒轮询每个 brain topic
+  （`pollSurfaceBrainTopics`，首次回溯 5 分钟，之后按最后一条消息 id），读到
+  `[brain-reply <id>]` 就 `answerSurfaceBrainRequest`：把回复存进 run 的
+  transcript（`surfaceBrainReply`），把 delivery 关掉（`taken_at`，outcome
+  `sent`），run 重新入队。收到回复的 worker 还会踢一下 outbox。
+
+## Run 的结局（executor 的 surface-brain 分支）
+
+- 有存好的回复 → 以 agent 的名义把 Muse 的话发出去，run 完成（done）。
+- 没链接 → 失败 `surface_brain_unlinked`。
+- 请求还开着 → 重新挂起（等回复或超时）。
+- 请求已关（超时 60 分钟，fallback job 唤醒）→ 失败 `surface.brain_timeout`。
+- 队列返回 null（没 topic / POST 失败）→ 失败 `surface_brain_unreachable`。
+
+## 范围
+
+- 只接 **DM** 的 run、**人**触发的、**非保密**会话（ADR 0190）。例程 / 任务 /
+  后台 run 永远不用 surface brain。
+- Brain kind `"surface"` 是 `BrainKind`，但**不是** `ComputerBrainKind`（没机器 /
+  计划 / 账号），也**不是**存下来的 brain：agent 存的 brain 仍是 `"model"`；
+  brain 的切换在链接上，不在 brain 选择器里。
+
+## 已知的缺口（按设计，待后续）
+
+- 超时 / 断链是让 run 失败，**不在 DM 里贴一条通知**（要一个 i18n bodyCode，
+  后续再做）。
+- brain topic 必须在 tearoad-os 能连到的服务器上：tearoad-os 连不上阿里云
+  ntfy（Ch2，TLS 握手超时），Ch1（InstaBox ntfy）能通。
+
+## 代码位置
+
+- 迁移：`packages/db` 0326 `surface_brain`（`surface_links.brain` + 每个
+  (user, surface, agent) 一个 brain 的唯一索引；deliveries kind `brain_request`
+  + `run_id`）、0327 `surface_brain_ntfy`（`ntfy_server`、`ntfy_topic`）。
+- 引擎：`packages/engine/src/surfaces/brain.ts`（建链、找链、排队、应答、轮询）、
+  `packages/engine/src/executor.ts`（surface-brain 分支）、
+  `packages/engine/src/surfaces/deliveries.ts`（brain 请求不进列表）、
+  `packages/engine/src/brains/types.ts` + `brain-settings.ts` 等（`surface`
+  不进 `StoredBrainKind` / `ComputerBrainKind`）。
+- 服务器：`apps/server/src/routes/app/surfaces.ts`（ntfy-brain 路由）、
+  `apps/server/src/workers.ts`（`surfaceBrainPoll` 每 30 秒）。
+- 客户端 / web：`packages/client`（`createNtfyBrain`）、
+  `apps/web/src/components/SurfaceLink.tsx`（brain 弹框 + 列表）。
+- 中转：`~/workspace/muse-relay/relay.py`（`BRAIN_TOPICS`、brain 请求 / 回复
+  的转发、pending 表）+ README。
+- 测试：`packages/engine/test/surfaces-brain.test.ts`（12）、
+  `apps/server/test/surface-links.test.ts`（ntfy-brain 路由 1 个）。
+
+## 上线（ops，另行，不在这期代码里）
+
+- dev 镜像要重建 + 重启 tearoad-os 上的 agentes（运行实例现在是官方镜像，
+  dev 的改动不生效）；relay 也要更新并在 `~/muse-relay/.env` 里加
+  `BRAIN_TOPICS`（每建一个 brain link 加一项），再 `docker compose up -d --build`。
+- 哪个外面的 Muse 当 brain（用户自己的另一个 Muse，还是别人的）尚未确认，
+  上线前要定下来。

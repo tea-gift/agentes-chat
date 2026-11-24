@@ -6,6 +6,11 @@
 /** Versioned because the service that calls it deploys apart from this server. */
 export const SURFACE_PREFIX = "/api/surface/v1";
 
+/** A delivery the service didn't take in time falls back to the in-app notification after this. */
+export const SURFACE_FALLBACK_MS = 5 * 60_000;
+/** The outbox job that runs that fallback. */
+export const SURFACE_FALLBACK_JOB = "surface.fallback";
+
 export interface SurfaceConfig {
   /** The lower-cased name: what rows and `meta.via` store. */
   id: string;

@@ -73,7 +73,14 @@ import {
   planOpened,
 } from "./audience";
 import { recordAudit } from "./audit";
-import { BRAIN_NAMES, type BrainKind, brainRunsOn, type ComputerBrainKind, isComputerBrain } from "./brains/types";
+import {
+  BRAIN_NAMES,
+  type BrainKind,
+  brainRunsOn,
+  type ComputerBrainKind,
+  isComputerBrain,
+  type StoredBrainKind,
+} from "./brains/types";
 import { caches } from "./cache";
 import { defaultCredentials, providerKeyOf } from "./credentials";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors";
@@ -129,7 +136,7 @@ import { agentsMovedOnto, paysExtraUsage, wakeAgentsBrainWaits } from "./usage-p
  * resolves it per run (`brainFor`).
  */
 
-export const BRAIN_KINDS: readonly BrainKind[] = [
+export const BRAIN_KINDS: readonly StoredBrainKind[] = [
   "model",
   "claude_code",
   "codex",
@@ -138,15 +145,15 @@ export const BRAIN_KINDS: readonly BrainKind[] = [
   "grok",
   "antigravity",
 ];
-export const isBrainKind = (v: unknown): v is BrainKind =>
+export const isBrainKind = (v: unknown): v is StoredBrainKind =>
   typeof v === "string" && (BRAIN_KINDS as readonly string[]).includes(v);
 /** An effort as stored: a level, or `auto` (the judge picks it per run). */
 export type BrainEffortSetting = BrainEffort | typeof AUTO_MODEL;
 export const isBrainEffortSetting = (v: unknown): v is BrainEffortSetting =>
   isBrainEffort(v) || isAutoModel(v as string);
 
-/** A stored value read back (anything unknown is the model brain). */
-export const brainOf = (v: unknown): BrainKind => (isBrainKind(v) ? v : "model");
+/** A stored value read back (anything unknown is the model brain). "surface" is never stored, so it reads back as the model brain. */
+export const brainOf = (v: unknown): StoredBrainKind => (isBrainKind(v) ? v : "model");
 
 export interface BrainModelOption {
   /** What is stored and passed to the CLI (`--model opus`, `-m gpt-…`). */
@@ -408,7 +415,8 @@ export type BrainUnavailable =
   | "system";
 
 export interface BrainOption {
-  kind: BrainKind;
+  /** A brain the settings offer: "surface" is resolved from a link, never offered here. */
+  kind: StoredBrainKind;
   available: boolean;
   reason?: BrainUnavailable;
   models: BrainModelOption[];
@@ -563,7 +571,7 @@ export type BrainScope = "mine" | "workspace";
 /** With `mine`: what the caller's DM with the right hand thinks with while they have no AI of their own. */
 export interface RightHandWorkspaceAi {
   /** `model`: an API key; else the plan's brain. */
-  brain: BrainKind;
+  brain: StoredBrainKind;
   /** The plan's owner; null on a key. */
   ownerId: string | null;
   /** It thinks for the caller: a key, a plan its owner lets serve everyone ("Atende outras pessoas"), or theirs. */
@@ -578,7 +586,8 @@ export interface AgentBrainView {
   scope?: BrainScope;
   /** The team's right hand, `mine` only. */
   workspaceAi?: RightHandWorkspaceAi;
-  brain: BrainKind;
+  /** The agent's stored brain: "surface" is resolved from its link, never stored, so it never appears here. */
+  brain: StoredBrainKind;
   /** As stored (null = the brain's default). */
   model: string | null;
   /** What it runs with (`model ?? defaultModel`), null for the model brain: its model is the agent's own `model`. */
@@ -1821,15 +1830,15 @@ export async function setAccountServes(
 // ── Missions ────────────────────────────────────────────────────────────────
 
 /** The brain a mission's executor means (`claude` → Claude Code, `codex` → Codex, `agent` → the model). */
-export const executorBrain = (executor: string): BrainKind =>
+export const executorBrain = (executor: string): StoredBrainKind =>
   executor === "codex" ? "codex" : executor === "agent" ? "model" : "claude_code";
 
 export interface MissionBrainView {
   missionId: string;
-  /** The override as stored (null = from the executor). */
-  brain: BrainKind | null;
+  /** The override as stored (null = from the executor). "surface" is never a mission's brain. */
+  brain: StoredBrainKind | null;
   model: string | null;
-  effectiveBrain: BrainKind;
+  effectiveBrain: StoredBrainKind;
   /** What it runs with: the override, the agent's model for that brain, or the brain's default. */
   effectiveModel: string | null;
   options: BrainOption[];
@@ -1955,7 +1964,8 @@ export async function setMissionBrain(
  * (ADR 0063 §4, §5).
  */
 export interface AgentBrainSummary {
-  kind: BrainKind;
+  /** The agent's stored brain: "surface" is resolved from its link, never stored, so it never appears here. */
+  kind: StoredBrainKind;
   model: string | null;
   computer?: string;
   /** A key account's coding plan (`zai`…): its maker's model thinks, through Claude Code. */

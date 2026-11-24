@@ -33,7 +33,7 @@ import {
 import { recordAudit } from "./audit";
 import { UUID } from "./authority";
 import { brainOf } from "./brain-settings";
-import { BRAIN_PLAN_NAMES, type BrainKind, isComputerBrain } from "./brains/types";
+import { BRAIN_PLAN_NAMES, type BrainKind, isComputerBrain, type StoredBrainKind } from "./brains/types";
 import { caches, type TtlCache } from "./cache";
 import { canceledBy } from "./cancel";
 import { requireChannelAccess } from "./channels";
@@ -340,8 +340,8 @@ export interface RoutineView {
     extraOff: boolean;
     extraUsedUp: boolean;
   } | null;
-  /** Where it thinks: the agent's brain and, for a computer brain, the computer's name. */
-  brain: { kind: BrainKind; machineName: string | null };
+  /** Where it thinks: the agent's brain and, for a computer brain, the computer's name. "surface" never runs a routine. */
+  brain: { kind: StoredBrainKind; machineName: string | null };
   /**
    * The last week's runs by outcome (`ok`: reported; `skipped`: slots that didn't run, replaced ones too, as in
    * the run strip; `total`: their sum, without the runs a person stopped).
@@ -839,8 +839,17 @@ async function viewerRights(
   return out;
 }
 
-const BRAINS: readonly BrainKind[] = ["model", "claude_code", "codex", "cursor", "opencode", "grok", "antigravity"];
-const brainKindOf = (v: unknown): BrainKind => (BRAINS.includes(v as BrainKind) ? (v as BrainKind) : "model");
+const BRAINS: readonly StoredBrainKind[] = [
+  "model",
+  "claude_code",
+  "codex",
+  "cursor",
+  "opencode",
+  "grok",
+  "antigravity",
+];
+const brainKindOf = (v: unknown): StoredBrainKind =>
+  BRAINS.includes(v as StoredBrainKind) ? (v as StoredBrainKind) : "model";
 
 /** Who paid the week: a computer brain's plan, the API, or both; no usage yet: what its brain would bill. */
 function billedTo(

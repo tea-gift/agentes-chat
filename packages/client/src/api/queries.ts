@@ -426,6 +426,14 @@ export function useRemoveSurfaceLink() {
   return useSurfaceLinkMutation((linkId: string) => api.surfaces.remove(linkId));
 }
 
+/** Connect a Muse as an agent's brain by naming its ntfy channel (server + topic). */
+export function useCreateNtfyBrainLink() {
+  const api = useApi();
+  return useSurfaceLinkMutation((input: { agentId: string; server: string; topic: string }) =>
+    api.surfaces.createNtfyBrain(input.agentId, input.server, input.topic),
+  );
+}
+
 /** The "linked" email's undo, by its token; works signed out. */
 export function useUndoSurfaceLink() {
   const api = useApi();

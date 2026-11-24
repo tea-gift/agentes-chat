@@ -345,6 +345,12 @@ export interface SurfaceLink {
   /** The agent the link talks to; null: the workspace's right hand. */
   agentId: string | null;
   agentName: string | null;
+  /** This link's sender is the agent's brain (its replies come from the sender, not a model). */
+  brain: boolean;
+  /** A brain link's ntfy server; null on a link paired the usual way. */
+  ntfyServer: string | null;
+  /** A brain link's ntfy topic; null on a link paired the usual way. */
+  ntfyTopic: string | null;
   createdAt: string;
   confirmedAt: string | null;
   /** Pending only: when it stops counting. */

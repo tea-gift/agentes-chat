@@ -660,6 +660,8 @@ export function createHttpApi(options: TransportOptions = {}): HttpApi {
         request<SurfaceLinkCode>(`${org(orgId)}/surface-link/code`, { json: agentId ? { agentId } : {} }),
       confirm: (linkId) => request<SurfaceLink>(`/api/app/me/surface-links/${enc(linkId)}/confirm`, { json: {} }),
       remove: (linkId) => request<void>(`/api/app/me/surface-links/${enc(linkId)}`, { method: "DELETE" }),
+      createNtfyBrain: (agentId, server, topic) =>
+        request<SurfaceLink>("/api/app/me/surface-links/ntfy-brain", { json: { agentId, server, topic } }),
       undo: (token) =>
         request<{ unlinked: boolean; surface: string; display: string | null }>("/api/app/surface-undo", {
           json: { token },

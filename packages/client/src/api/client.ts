@@ -541,6 +541,12 @@ export interface ApiClient {
     confirm(linkId: string): Promise<SurfaceLink>;
     /** Cancels a pending link or unlinks an active one. `surface.link_gone` (404). */
     remove(linkId: string): Promise<void>;
+    /**
+     * Connect a Muse as an agent's brain by naming its ntfy channel (server + topic): no pairing code, the topic
+     * is the shared secret, and the link is active at once. `surface.brain_bad_server` / `surface.brain_bad_topic`
+     * (422), `surface.brain_no_agent` (404), `surface.brain_not_member` (403).
+     */
+    createNtfyBrain(agentId: string, server: string, topic: string): Promise<SurfaceLink>;
     /** "Not you? Unlink it" from the "linked" email: no session needed. `surface.undo_gone` (404), `rate_limited` (429). */
     undo(token: string): Promise<{ unlinked: boolean; surface: string; display: string | null }>;
   };

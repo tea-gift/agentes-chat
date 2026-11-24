@@ -2646,6 +2646,26 @@ export const en = {
       unlinkText: "{{assistant}} stops answering you there. You can link it again any time.",
       unlinked: "{{surface}} unlinked",
     },
+    /** A Muse as an agent's brain, over ntfy (ADR 0187 addendum): the server + topic are the connection. */
+    brain: {
+      /** The row that adds a brain link. */
+      add: "Connect a Muse as a brain",
+      /** The brain row's hint: {{assistant}} is the agent whose replies the Muse writes. */
+      hint: "{{assistant}} answers with what a linked Muse writes, over ntfy.",
+      /** The brain row's status: the topic it reads. */
+      topic: "Topic {{topic}}",
+      title: "Connect a Muse as {{assistant}}'s brain",
+      /** The ntfy server the request is posted to. */
+      server: "ntfy server",
+      serverPlaceholder: "https://ntfy.sh",
+      /** The ntfy topic the request is posted to and the reply read from. */
+      topicLabel: "Topic",
+      topicPlaceholder: "muse-brain-mu1",
+      /** Who the Muse writes for. */
+      agent: "Agent",
+      connect: "Connect",
+      connected: "{{assistant}} now answers with its linked Muse.",
+    },
     /** The page the "linked" email's undo opens. Signed out, so it learns the app's name only from the answer. */
     undo: {
       title: "Unlink the chat app?",

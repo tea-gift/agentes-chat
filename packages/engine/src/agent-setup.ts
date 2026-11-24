@@ -25,7 +25,7 @@ import {
   setAgentBrain,
 } from "./brain-settings";
 import { planIsOwners } from "./brains/select";
-import type { BrainKind } from "./brains/types";
+import type { BrainKind, StoredBrainKind } from "./brains/types";
 import { caches } from "./cache";
 import { ValidationError } from "./errors";
 import { defaultAccountLabel, listMachineAccounts, type MachineAccountView } from "./machine-accounts";
@@ -468,7 +468,8 @@ function takesAccount(
 
 /** "Criar agente": the setup new agents start with, as it stands now; null when there is none to start with. */
 export interface NewAgentSetup {
-  brain: BrainKind;
+  /** The brain the setup picks: "surface" is resolved from a link, never picked here. */
+  brain: StoredBrainKind;
   model: string | null;
   /** The API brain's key, still the workspace's; null: the workspace's default. */
   key: string | null;

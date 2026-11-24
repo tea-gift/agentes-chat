@@ -12,10 +12,13 @@ import type { ToolImage } from "@agenteschat/providers";
 import { planOf } from "@agenteschat/providers/plans";
 import type { CodeSetup } from "../git/machine";
 
-export type BrainKind = "model" | "claude_code" | "codex" | "cursor" | "opencode" | "grok" | "antigravity";
+export type BrainKind = "model" | "claude_code" | "codex" | "cursor" | "opencode" | "grok" | "antigravity" | "surface";
 
-/** A brain that runs on the agent's computer with a person's plan (ADR 0114 adds Cursor). */
-export type ComputerBrainKind = Exclude<BrainKind, "model">;
+/** A brain that runs on the agent's computer with a person's plan (ADR 0114 adds Cursor). "surface" is no computer brain: it has no machine, plan or account. */
+export type ComputerBrainKind = Exclude<BrainKind, "model" | "surface">;
+
+/** A brain as stored on an agent (and picked in settings): "surface" is resolved from its link, never stored or picked. */
+export type StoredBrainKind = Exclude<BrainKind, "surface">;
 
 /** What people call each computer brain's CLI, in messages. */
 export const BRAIN_NAMES: Readonly<Record<ComputerBrainKind, string>> = {

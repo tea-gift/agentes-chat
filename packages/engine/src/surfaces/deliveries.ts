@@ -27,8 +27,10 @@ import { getMembership } from "../organizations";
 import { enqueue } from "../outbox";
 import { personLocale } from "../requester";
 import { postFromLodi } from "../right-hand-proactive";
-import { surfaceOn } from "./config";
+import { SURFACE_FALLBACK_JOB, SURFACE_FALLBACK_MS, surfaceOn } from "./config";
 import { activeLinkOf, agentForLink } from "./links";
+
+export { SURFACE_FALLBACK_JOB, SURFACE_FALLBACK_MS } from "./config";
 
 /**
  * Replies of the link's agent that go out on the outside chat surface (ADR 0187) instead of an in-app notification.
@@ -39,8 +41,6 @@ import { activeLinkOf, agentForLink } from "./links";
 
 const { surfaceDeliveries, surfaceLinks, surfaceCalls, messages, agentRuns, channels, channelMembers } = schema;
 
-export const SURFACE_FALLBACK_MS = 5 * 60_000;
-export const SURFACE_FALLBACK_JOB = "surface.fallback";
 export const SURFACE_DELIVERY_KEEP_MS = 7 * 24 * 3600_000;
 const SURFACE_CALL_KEEP_MS = 90 * 24 * 3600_000;
 
@@ -282,7 +282,8 @@ const openSince = () => new Date(Date.now() - SURFACE_FALLBACK_MS);
 /**
  * What the service should send now, oldest first: open rows younger than `SURFACE_FALLBACK_MS`. Each is checked
  * again: a link that ended falls back to the app; a person no longer in the workspace, or an agent that may no
- * longer talk to them, drops it.
+ * longer talk to them, drops it. A brain request is never listed here: it is POSTed to its link's ntfy topic, and
+ * the reply is read from the topic (`pollSurfaceBrainTopics`), not taken here.
  */
 export async function listSurfaceDeliveries(deps: DeliveryDeps, limit: number): Promise<SurfaceDeliveryView[]> {
   const { db } = deps;
@@ -291,7 +292,13 @@ export async function listSurfaceDeliveries(deps: DeliveryDeps, limit: number): 
     .select({ row: surfaceDeliveries, link: surfaceLinks })
     .from(surfaceDeliveries)
     .leftJoin(surfaceLinks, eq(surfaceLinks.id, surfaceDeliveries.linkId))
-    .where(and(isNull(surfaceDeliveries.takenAt), gt(surfaceDeliveries.createdAt, openSince())))
+    .where(
+      and(
+        isNull(surfaceDeliveries.takenAt),
+        gt(surfaceDeliveries.createdAt, openSince()),
+        sql`${surfaceDeliveries.kind} <> 'brain_request'`,
+      ),
+    )
     .orderBy(asc(surfaceDeliveries.createdAt))
     .limit(limit);
   const out: SurfaceDeliveryView[] = [];
@@ -309,7 +316,8 @@ export async function listSurfaceDeliveries(deps: DeliveryDeps, limit: number): 
     }
     const base = {
       id: row.id,
-      kind: row.kind,
+      // The query above leaves brain requests out, so only a reply or a link comes back.
+      kind: row.kind as "reply" | "linked",
       linkId: link.id,
       externalId: link.externalId,
       orgId: row.orgId,
@@ -420,9 +428,25 @@ export async function takeDeliveries(
   };
 }
 
-/** Job `surface.fallback`: not taken in time, so the person hears of it in the app. A row already closed is left. */
+/**
+ * Job `surface.fallback`: not taken in time, so the person hears of it in the app. A row already closed is left. A
+ * brain request that timed out wakes its parked run instead: the executor fails it with the reason, rather than
+ * leaving it waiting forever.
+ */
 export async function fallBack(deps: DeliveryDeps, deliveryId: string): Promise<void> {
+  const [row] = await deps.db
+    .select({ kind: surfaceDeliveries.kind, runId: surfaceDeliveries.runId, orgId: surfaceDeliveries.orgId })
+    .from(surfaceDeliveries)
+    .where(eq(surfaceDeliveries.id, deliveryId));
   await notifyInApp(deps, await close(deps.db, [deliveryId], "fallback"));
+  if (row?.kind === "brain_request" && row.runId)
+    await enqueue(deps.db, {
+      orgId: row.orgId,
+      kind: "agent_run.execute",
+      payload: { runId: row.runId },
+      dedupeKey: `agent_run.execute:${row.runId}:brain-timeout:${deliveryId}`,
+      maxAttempts: 4,
+    });
 }
 
 /**

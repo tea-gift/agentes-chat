@@ -284,6 +284,42 @@ test("one sender's refused claims don't spend the cap shared by every sender", a
   expect((await claim((await mint()).body.code, "sender-after-flood")).status).toBe(201);
 });
 
+test("a Muse as brain: server + topic is a link at once, bad input is 400, unknown agent 404", async () => {
+  const [rh] = await t.db
+    .select()
+    .from(schema.agents)
+    .where(and(eq(schema.agents.orgId, anaOrg), eq(schema.agents.builtin, "right_hand")));
+  if (!rh) throw new Error("no right hand");
+  const create = async (json: Record<string, unknown>) => {
+    const res = await ana("/api/app/me/surface-links/ntfy-brain", { json });
+    return {
+      status: res.status,
+      body: (await res.json()) as Record<string, unknown> & { error?: { code: string } },
+    };
+  };
+  const bad = await create({ agentId: rh.id, server: "not a url", topic: "brain" });
+  expect([bad.status, bad.body.error?.code]).toEqual([400, "surface.brain_bad_server"]);
+  const badTopic = await create({ agentId: rh.id, server: "https://ntfy.example.com", topic: "has/slash" });
+  expect([badTopic.status, badTopic.body.error?.code]).toEqual([400, "surface.brain_bad_topic"]);
+  const gone = await create({ agentId: Bun.randomUUIDv7(), server: "https://ntfy.example.com", topic: "brain" });
+  expect([gone.status, gone.body.error?.code]).toEqual([404, "surface.brain_no_agent"]);
+  setSurface(null);
+  const off = await create({ agentId: rh.id, server: "https://ntfy.example.com", topic: "brain" });
+  expect([off.status, off.body.error?.code]).toEqual([404, "surface.off"]);
+  setSurface(surfaceFromConfig(t.config));
+  const created = await create({ agentId: rh.id, server: "https://ntfy.example.com/", topic: "muse-brain-rh" });
+  expect(created.status).toBe(201);
+  expect(created.body).toMatchObject({
+    status: "active",
+    brain: true,
+    ntfyServer: "https://ntfy.example.com",
+    ntfyTopic: "muse-brain-rh",
+  });
+  expect((await list()).links).toContainEqual(
+    expect.objectContaining({ id: created.body.id as string, agentId: rh.id }),
+  );
+});
+
 // Last: it spends the claims cap across all senders for the rest of the file.
 test("past 120 claims an hour across senders: surface.busy, and one operator event", async () => {
   enableOperatorEvents();

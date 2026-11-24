@@ -4,6 +4,7 @@ import {
   type SurfaceLinks,
   useAgents,
   useConfirmSurfaceLink,
+  useCreateNtfyBrainLink,
   useRemoveSurfaceLink,
   useSurfaceLinks,
 } from "@agenteschat/client";
@@ -29,6 +30,7 @@ import {
   DialogFooter,
   Field,
   Icon,
+  Input,
   PixelSpinner,
   QrCode,
   Select,
@@ -100,6 +102,7 @@ export function SurfacePrefRow() {
   const rightHand = useAssistantName(org.id) ?? t("rightHand.labelCapitalized");
   const [open, setOpen] = useOpenParam("link");
   const [unlinking, setUnlinking] = useState<SurfaceLink | null>(null);
+  const [brainOpen, setBrainOpen] = useState(false);
   const list = surfaceLinksOf(links.data);
   if (!list) return null;
   const { surface, links: rows } = list;
@@ -107,6 +110,24 @@ export function SurfacePrefRow() {
   return (
     <>
       {rows.map((link) => {
+        if (link.brain) {
+          // A Muse as the agent's brain, over ntfy: the topic is the connection, not a sender.
+          return (
+            <PrefRow
+              key={link.id}
+              id={`notice-surface-brain-${link.id}`}
+              lead={<SurfaceMark name="ntfy" />}
+              label="ntfy"
+              hint={t("surface.brain.hint", { assistant: agentOf(link) })}
+              status={link.ntfyTopic ? t("surface.brain.topic", { topic: link.ntfyTopic }) : undefined}
+              control={
+                <Button size="sm" icon="block" onClick={() => setUnlinking(link)}>
+                  {t("surface.row.unlink")}
+                </Button>
+              }
+            />
+          );
+        }
         const sender =
           link.status === "active" ? [link.display && formatPhone(link.display), link.profileName].filter(Boolean) : [];
         return (
@@ -156,6 +177,18 @@ export function SurfacePrefRow() {
           </Button>
         }
       />
+      <PrefRow
+        id="notice-surface-brain-add"
+        lead={<SurfaceMark name="ntfy" />}
+        label="ntfy"
+        hint={t("surface.brain.add")}
+        control={
+          <Button size="sm" icon="link" onClick={() => setBrainOpen(true)}>
+            {t("surface.brain.connect")}
+          </Button>
+        }
+      />
+      <SurfaceBrainDialog open={brainOpen} onClose={() => setBrainOpen(false)} />
       <SurfaceLinkDialog open={open !== null} onClose={() => setOpen(null)} />
       <Dialog
         open={unlinking !== null}
@@ -188,6 +221,96 @@ export function SurfacePrefRow() {
         </DialogFooter>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Connect a Muse as an agent's brain, over ntfy: the server and topic are the connection, no pairing code, and the
+ * topic name is the shared secret. The link is active at once and replaces the agent's other brain link.
+ */
+export function SurfaceBrainDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const { org } = useOrg();
+  const agents = useAgents(org.id).data;
+  const rightHand = useAssistantName(org.id) ?? t("rightHand.labelCapitalized");
+  const create = useCreateNtfyBrainLink();
+  const [agentId, setAgentId] = useState("");
+  const [server, setServer] = useState("");
+  const [topic, setTopic] = useState("");
+  const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    if (!open) {
+      setAgentId("");
+      setServer("");
+      setTopic("");
+      setError(null);
+    }
+  }, [open]);
+  const picked = agents?.find((a) => a.id === agentId);
+  const assistant = picked?.name ?? rightHand;
+  const canSubmit = Boolean(agentId && server.trim() && topic.trim()) && !create.isPending;
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !o && !create.isPending && onClose()}
+      title={t("surface.brain.title", { assistant })}
+      closeLabel={t("common.close")}
+      width={440}
+    >
+      <DialogBody className="surface-link">
+        <Field label={t("surface.brain.agent")}>
+          <Select
+            aria-label={t("surface.brain.agent")}
+            value={agentId}
+            onValueChange={setAgentId}
+            options={(agents ?? []).filter((a) => a.canTalk !== false).map((a) => ({ value: a.id, label: a.name }))}
+          />
+        </Field>
+        <Field label={t("surface.brain.server")}>
+          <Input
+            type="url"
+            autoComplete="off"
+            placeholder={t("surface.brain.serverPlaceholder")}
+            value={server}
+            onChange={(e) => setServer(e.target.value)}
+          />
+        </Field>
+        <Field label={t("surface.brain.topicLabel")}>
+          <Input
+            autoComplete="off"
+            placeholder={t("surface.brain.topicPlaceholder")}
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+          />
+        </Field>
+        {error && <Alert>{errorText(t, error)}</Alert>}
+      </DialogBody>
+      <DialogFooter>
+        <Button onClick={onClose} disabled={create.isPending}>
+          {t("common.cancel")}
+        </Button>
+        <Button
+          variant="primary"
+          loading={create.isPending}
+          disabled={!canSubmit}
+          onClick={() =>
+            create.mutate(
+              { agentId, server: server.trim(), topic: topic.trim() },
+              {
+                onSuccess: () => {
+                  toast.show(t("surface.brain.connected", { assistant }));
+                  onClose();
+                },
+                onError: setError,
+              },
+            )
+          }
+        >
+          {t("surface.brain.connect")}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 

@@ -340,6 +340,7 @@ export * from "./streams";
 export * from "./stretch";
 export * from "./stuck";
 export * from "./support-requests";
+export * from "./surfaces/brain";
 export * from "./surfaces/config";
 export * from "./surfaces/deliveries";
 export * from "./surfaces/inbound";

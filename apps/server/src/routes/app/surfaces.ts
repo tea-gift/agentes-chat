@@ -1,5 +1,7 @@
 import {
   confirmLink,
+  createNtfyBrainLink,
+  linkView,
   listLinks,
   mintLinkCode,
   removeLink,
@@ -45,6 +47,15 @@ const SurfaceLink = z
       .nullable()
       .openapi({ description: "The agent the link talks to; null: the workspace's right hand." }),
     agentName: z.string().nullable().openapi({ description: "That agent's name; null with the right hand." }),
+    brain: z.boolean().openapi({ description: "This link's sender is the agent's brain." }),
+    ntfyServer: z
+      .string()
+      .nullable()
+      .openapi({ description: "A brain link's ntfy server; null on a link paired the usual way." }),
+    ntfyTopic: z
+      .string()
+      .nullable()
+      .openapi({ description: "A brain link's ntfy topic; null on a link paired the usual way." }),
     createdAt: z.string(),
     confirmedAt: z.string().nullable(),
     expiresAt: z.string().nullable().openapi({ description: "Pending only: when it stops counting (10 minutes)." }),
@@ -98,6 +109,47 @@ export function surfaceRoutes(deps: AppDeps) {
         { surface: { name: surface.name }, allowed: surfaceAllowed(user.email), links: await listLinks(db, user.id) },
         200,
       );
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/me/surface-links/ntfy-brain",
+      tags,
+      security,
+      summary: "Connect a Muse as an agent's brain by naming its ntfy channel",
+      description:
+        "No pairing code: the server the brain request is POSTed to and the topic the reply is read from are the connection, and the topic name is the shared secret. The link is active at once and replaces the agent's other brain link. `agentId`: the agent whose replies the Muse writes.",
+      request: {
+        body: body(
+          z
+            .object({
+              agentId: z.string().uuid(),
+              server: z.string().min(1).max(500),
+              topic: z.string().min(1).max(64),
+            })
+            .strict(),
+        ),
+      },
+      responses: {
+        201: json(SurfaceLink),
+        401: errors[401],
+        403: errorResponse("The agent isn't in a workspace of yours (`surface.brain_not_member`)"),
+        404: errorResponse("Off (`surface.off`), or the agent is gone (`surface.brain_no_agent`)"),
+        400: errorResponse(
+          "The server isn't a URL or the topic isn't a topic (`surface.brain_bad_server`, `surface.brain_bad_topic`)",
+        ),
+      },
+    }),
+    async (c) => {
+      const user = c.get("user");
+      requireSurface();
+      const { agentId, server, topic } = c.req.valid("json");
+      const link = await createNtfyBrainLink({ db }, user.id, agentId, server, topic);
+      const view = await linkView(db, link.id);
+      if (!view) throw new Error("surface brain link not found after write");
+      return c.json(view, 201);
     },
   );
 

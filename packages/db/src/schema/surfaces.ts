@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { users } from "./auth";
 import { organizations } from "./tenancy";
 
@@ -28,6 +28,18 @@ export const surfaceLinks = pgTable(
     orgId: uuid().references(() => organizations.id, { onDelete: "set null" }),
     /** The agent the link talks to; null: the workspace's right hand (the default). */
     agentId: uuid(),
+    /**
+     * This link's sender is the agent's brain: the agent answers with what the sender writes, not its own model
+     * (ADR 0187 addendum, "Muse as brain"). Only one active brain link per (account, surface, agent).
+     */
+    brain: boolean().notNull().default(false),
+    /**
+     * A brain link's ntfy channel (ADR 0187 addendum, "Muse as brain"): the server the brain request is POSTed to
+     * and the topic the reply is read from. No pairing code: the topic name is the shared secret. Null on a link
+     * paired the usual way (a brain link made from one has no topic to post to).
+     */
+    ntfyServer: text(),
+    ntfyTopic: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp({ withTimezone: true }),
     lastSeenAt: timestamp({ withTimezone: true }),
@@ -38,14 +50,19 @@ export const surfaceLinks = pgTable(
     uniqueIndex("surface_links_one_per_account_agent")
       .on(t.userId, t.surface, sql`coalesce(${t.agentId}, '00000000-0000-0000-0000-000000000000'::uuid)`)
       .where(sql`${t.status} = 'active'`),
+    uniqueIndex("surface_links_one_brain_per_account_agent")
+      .on(t.userId, t.surface, sql`coalesce(${t.agentId}, '00000000-0000-0000-0000-000000000000'::uuid)`)
+      .where(sql`${t.status} = 'active' and ${t.brain} = true`),
     index().on(t.userId),
   ],
 );
 
 /**
- * What the surface's service should send: a reply of the right hand, or the notice that a link is active. Pulled,
- * never pushed. Closed once (`taken_at`) by the service or by the fallback to an in-app notification, whichever is
- * first. `message_id` has no foreign key: `messages` is partitioned (ADR 0009).
+ * What the surface's service should send: a reply of the right hand, the notice that a link is active, or a
+ * brain request: a run whose agent thinks with the linked sender, asking it to write the reply (ADR 0187
+ * addendum, "Muse as brain"). Pulled, never pushed. Closed once (`taken_at`) by the service or by the fallback
+ * to an in-app notification, whichever is first. `message_id` has no foreign key: `messages` is partitioned
+ * (ADR 0009). A brain request carries its run in `run_id` and the message it must answer in `in_reply_to`.
  */
 export const surfaceDeliveries = pgTable(
   "surface_deliveries",
@@ -58,17 +75,19 @@ export const surfaceDeliveries = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     /** Null once the link ended: the row stays so the reply still reaches the person in the app. */
     linkId: uuid().references(() => surfaceLinks.id, { onDelete: "set null" }),
-    kind: text().$type<"reply" | "linked">().notNull(),
+    kind: text().$type<"reply" | "linked" | "brain_request">().notNull(),
     messageId: uuid(),
     messageCreatedAt: timestamp({ withTimezone: true }),
     /** The person's surface message the run read last. */
     inReplyTo: uuid(),
+    /** The run waiting for this brain request (`brain_request` only). */
+    runId: uuid(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     takenAt: timestamp({ withTimezone: true }),
     outcome: text().$type<"sent" | "unsent" | "fallback" | "dropped">(),
   },
   (t) => [
-    check("surface_deliveries_kind", sql`${t.kind} in ('reply', 'linked')`),
+    check("surface_deliveries_kind", sql`${t.kind} in ('reply', 'linked', 'brain_request')`),
     check("surface_deliveries_outcome", sql`${t.outcome} in ('sent', 'unsent', 'fallback', 'dropped')`),
     index("surface_deliveries_open").on(t.createdAt).where(sql`${t.takenAt} is null`),
     // A retried `notifications.message` job finds the reply's row instead of sending it twice.
