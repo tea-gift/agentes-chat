@@ -1,6 +1,21 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { type PubSub, type RateLimiter, retryInSeconds } from "@agenteschat/adapters";
-import { and, asc, type Database, desc, type Executor, eq, gt, lte, or, type SQL, schema, sql } from "@agenteschat/db";
+import {
+  and,
+  asc,
+  type Database,
+  desc,
+  type Executor,
+  eq,
+  gt,
+  isNull,
+  lte,
+  or,
+  type SQL,
+  schema,
+  sql,
+} from "@agenteschat/db";
+import { canTalkTo, speakerFor } from "../audience";
 import { CODE_ALPHABET, newConfirmationCode } from "../codes";
 import { sha256 } from "../crypto";
 import { emailAssistant, emailLocale, queueEmail } from "../email";
@@ -9,6 +24,7 @@ import { publishUserEvent } from "../events";
 import { recordOperatorEvent } from "../operator-events";
 import { getMembership } from "../organizations";
 import { personLocale } from "../requester";
+import { isRightHand } from "../right-hand";
 import { lodiFor, postFromLodi } from "../right-hand-proactive";
 import { surfaceOn } from "./config";
 
@@ -18,7 +34,7 @@ import { surfaceOn } from "./config";
  * deleted. A pending link older than `PENDING_LINK_MS` counts as gone wherever it is read; no job sweeps it.
  */
 
-const { surfaceLinks, surfaceDeliveries, verifications, organizations, users } = schema;
+const { agents, surfaceLinks, surfaceDeliveries, verifications, organizations, users } = schema;
 
 export const LINK_CODE_TTL_MS = 10 * 60_000;
 export const PENDING_LINK_MS = 10 * 60_000;
@@ -35,6 +51,9 @@ export interface SurfaceLinkView {
   profileName: string | null;
   orgId: string | null;
   orgName: string | null;
+  /** The agent the link talks to; null: the workspace's right hand. */
+  agentId: string | null;
+  agentName: string | null;
   createdAt: string;
   confirmedAt: string | null;
   /** Pending only: when it stops counting. */
@@ -82,14 +101,49 @@ const dropStalePending = (db: Executor, userId: string) =>
     );
 
 /**
- * A code the person types on the surface to link it to their account, answering in `orgId`. Earlier codes keep
- * working until they expire. `forbidden` when not a member; `surface.no_assistant` when the right hand there may not
- * talk to them.
+ * The agent a link talks to: the named one, or the workspace's right hand when none is named. Null when it can't
+ * talk to this person (gone, archived, out of reach, or the workspace's standing is closed). A named right hand
+ * counts as none: it is the default either way.
  */
-export async function mintLinkCode(db: Database, userId: string, orgId: string) {
+async function linkTarget(
+  db: Database,
+  orgId: string,
+  userId: string,
+  agentId: string | null,
+): Promise<typeof agents.$inferSelect | null> {
+  if (!agentId) return lodiFor(db, orgId, userId);
+  const [agent] = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.orgId, orgId), isNull(agents.archivedAt)));
+  if (!agent) return null;
+  if (isRightHand(agent)) return lodiFor(db, orgId, userId);
+  if (!canTalkTo(agent, userId, await speakerFor(db, orgId, userId))) return null;
+  return agent;
+}
+
+/**
+ * The agent a link talks to, when its messages arrive: the named one, else the workspace's right hand. Null when
+ * the link's workspace is gone or the agent can't talk to its person any more.
+ */
+export async function agentForLink(
+  db: Database,
+  link: Pick<SurfaceLinkRow, "orgId" | "userId" | "agentId">,
+): Promise<typeof agents.$inferSelect | null> {
+  if (!link.orgId) return null;
+  return linkTarget(db, link.orgId, link.userId, link.agentId);
+}
+
+/**
+ * A code the person types on the surface to link it to their account, answering in `orgId`. Earlier codes keep
+ * working until they expire. `forbidden` when not a member; `surface.no_assistant` when the agent it names (or the
+ * right hand, when none is named) may not talk to them.
+ */
+export async function mintLinkCode(db: Database, userId: string, orgId: string, agentId?: string | null) {
   const surface = requireSurface();
   if (!(await getMembership(db, userId, orgId))) throw new ForbiddenError();
-  if (!(await lodiFor(db, orgId, userId))) {
+  const target = await linkTarget(db, orgId, userId, agentId ?? null);
+  if (!target) {
     throw new ConflictError("The assistant of this workspace can't talk to you", "surface.no_assistant");
   }
   await dropStalePending(db, userId);
@@ -99,7 +153,7 @@ export async function mintLinkCode(db: Database, userId: string, orgId: string) 
   await db.insert(verifications).values({
     id: randomUUID(),
     identifier: codeId(normalizeLinkCode(code) ?? code),
-    value: JSON.stringify({ userId, orgId }),
+    value: JSON.stringify({ userId, orgId, ...(isRightHand(target) ? {} : { agentId: target.id }) }),
     expiresAt,
     createdAt: now,
     updatedAt: now,
@@ -107,10 +161,12 @@ export async function mintLinkCode(db: Database, userId: string, orgId: string) 
   return { code, openUrl: surface.openUrl.replace("{text}", encodeURIComponent(code)), expiresAt };
 }
 
-function codeValue(value: string): { userId: string; orgId: string } | null {
+function codeValue(value: string): { userId: string; orgId: string; agentId: string | null } | null {
   try {
     const v = JSON.parse(value) as Record<string, unknown>;
-    return typeof v.userId === "string" && typeof v.orgId === "string" ? { userId: v.userId, orgId: v.orgId } : null;
+    return typeof v.userId === "string" && typeof v.orgId === "string"
+      ? { userId: v.userId, orgId: v.orgId, agentId: typeof v.agentId === "string" ? v.agentId : null }
+      : null;
   } catch {
     return null;
   }
@@ -153,6 +209,7 @@ export async function claimLink(
         profileName: input.profileName,
         status: "pending",
         orgId: owner.orgId,
+        ...(owner.agentId ? { agentId: owner.agentId } : {}),
       })
       .returning();
     if (!inserted) throw new Error("surface link not written");
@@ -163,8 +220,9 @@ export async function claimLink(
 }
 
 /**
- * The person confirms a pending link in the app: it becomes the account's one active link on the surface, replacing
- * the old one (or moving this sender's link to another workspace), and the service is told to say so (`linked`).
+ * The person confirms a pending link in the app: it becomes the account's one active link on the surface for its
+ * agent (or the right hand), replacing that one's old link (or moving this sender's link to another workspace), and
+ * the service is told to say so (`linked`).
  */
 export async function confirmLink(deps: LinkDeps, userId: string, linkId: string): Promise<SurfaceLinkView> {
   const surface = requireSurface();
@@ -175,9 +233,12 @@ export async function confirmLink(deps: LinkDeps, userId: string, linkId: string
     eq(surfaceLinks.status, "pending"),
     gt(surfaceLinks.createdAt, pendingSince()),
   );
-  // The right hand is asked before the transaction: its reads take a `Database`, not the transaction's handle.
-  const [first] = await deps.db.select({ orgId: surfaceLinks.orgId }).from(surfaceLinks).where(pendingWhere);
-  const assistant = first?.orgId ? await lodiFor(deps.db, first.orgId, userId) : null;
+  // The agent is asked before the transaction: its reads take a `Database`, not the transaction's handle.
+  const [first] = await deps.db
+    .select({ orgId: surfaceLinks.orgId, agentId: surfaceLinks.agentId })
+    .from(surfaceLinks)
+    .where(pendingWhere);
+  const target = first?.orgId ? await linkTarget(deps.db, first.orgId, userId, first.agentId) : null;
   const confirmed = deps.db.transaction(async (tx) => {
     const [pending] = await tx.select().from(surfaceLinks).where(pendingWhere).for("update");
     if (!pending) throw new NotFoundError("This link is no longer waiting", "surface.link_gone");
@@ -188,14 +249,19 @@ export async function confirmLink(deps: LinkDeps, userId: string, linkId: string
     if (!pending.orgId || !(await getMembership(tx, userId, pending.orgId))) {
       throw new ConflictError("You are not in this workspace", "surface.no_workspace");
     }
-    if (!assistant || assistant.orgId !== pending.orgId) {
+    if (!target || target.orgId !== pending.orgId) {
       throw new ConflictError("The assistant of this workspace can't talk to you", "surface.no_assistant");
     }
-    // The account's old link, which is also this sender's when it only moves to another workspace.
+    // The account's old link for this agent, which is also this sender's when it only moves to another workspace.
     const replaced = await tx
       .delete(surfaceLinks)
       .where(
-        and(eq(surfaceLinks.userId, userId), eq(surfaceLinks.surface, surface.id), eq(surfaceLinks.status, "active")),
+        and(
+          eq(surfaceLinks.userId, userId),
+          eq(surfaceLinks.surface, surface.id),
+          eq(surfaceLinks.status, "active"),
+          pending.agentId ? eq(surfaceLinks.agentId, pending.agentId) : isNull(surfaceLinks.agentId),
+        ),
       )
       .returning();
     const [active] = await tx
@@ -370,18 +436,21 @@ export async function unlinkAllFor(db: Executor, userId: string): Promise<void> 
 
 async function viewsOf(db: Executor, where: SQL | undefined): Promise<SurfaceLinkView[]> {
   const rows = await db
-    .select({ link: surfaceLinks, orgName: organizations.name })
+    .select({ link: surfaceLinks, orgName: organizations.name, agentName: agents.name })
     .from(surfaceLinks)
     .leftJoin(organizations, eq(organizations.id, surfaceLinks.orgId))
+    .leftJoin(agents, eq(agents.id, surfaceLinks.agentId))
     .where(and(where, or(eq(surfaceLinks.status, "active"), gt(surfaceLinks.createdAt, pendingSince()))))
     .orderBy(asc(sql`${surfaceLinks.status} = 'pending'`), desc(surfaceLinks.createdAt));
-  return rows.map(({ link, orgName }) => ({
+  return rows.map(({ link, orgName, agentName }) => ({
     id: link.id,
     status: link.status,
     display: link.display,
     profileName: link.profileName,
     orgId: link.orgId,
     orgName: link.orgId ? orgName : null,
+    agentId: link.agentId,
+    agentName: link.agentId ? agentName : null,
     createdAt: link.createdAt.toISOString(),
     confirmedAt: link.confirmedAt?.toISOString() ?? null,
     expiresAt: link.status === "pending" ? pendingExpiry(link.createdAt).toISOString() : null,

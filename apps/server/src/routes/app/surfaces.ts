@@ -40,6 +40,11 @@ const SurfaceLink = z
     profileName: z.string().nullable().openapi({ description: "The sender's own name on the surface. Untrusted." }),
     orgId: z.uuid().nullable(),
     orgName: z.string().nullable(),
+    agentId: z
+      .string()
+      .nullable()
+      .openapi({ description: "The agent the link talks to; null: the workspace's right hand." }),
+    agentName: z.string().nullable().openapi({ description: "That agent's name; null with the right hand." }),
     createdAt: z.string(),
     confirmedAt: z.string().nullable(),
     expiresAt: z.string().nullable().openapi({ description: "Pending only: when it stops counting (10 minutes)." }),
@@ -104,8 +109,8 @@ export function surfaceRoutes(deps: AppDeps) {
       security,
       summary: "A code to type on the outside chat surface, linking it to me in this workspace",
       description:
-        "Works for 10 minutes, once; earlier codes keep working until they expire. `openUrl` opens the surface with the code typed.",
-      request: { params: OrgParams },
+        "Works for 10 minutes, once; earlier codes keep working until they expire. `openUrl` opens the surface with the code typed. `agentId`: the agent the link talks to; absent: the workspace's right hand.",
+      request: { params: OrgParams, body: body(z.object({ agentId: z.string().uuid().optional() }).strict()) },
       responses: {
         201: json(z.object({ code: z.string(), openUrl: z.string(), expiresAt: z.string() })),
         401: errors[401],
@@ -125,7 +130,7 @@ export function surfaceRoutes(deps: AppDeps) {
       if (!(await adapters.rateLimiter.consume(`surface-code:${user.id}`, CODES_PER_HOUR)).allowed) {
         return apiError(c, 429, "rate_limited", "Too many codes. Try again later.");
       }
-      const minted = await mintLinkCode(db, user.id, orgId);
+      const minted = await mintLinkCode(db, user.id, orgId, c.req.valid("json").agentId ?? null);
       return c.json({ ...minted, expiresAt: minted.expiresAt.toISOString() }, 201);
     },
   );

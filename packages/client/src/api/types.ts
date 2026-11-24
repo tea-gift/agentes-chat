@@ -342,6 +342,9 @@ export interface SurfaceLink {
   /** The workspace it answers in; null when that workspace is gone. */
   orgId: string | null;
   orgName: string | null;
+  /** The agent the link talks to; null: the workspace's right hand. */
+  agentId: string | null;
+  agentName: string | null;
   createdAt: string;
   confirmedAt: string | null;
   /** Pending only: when it stops counting. */

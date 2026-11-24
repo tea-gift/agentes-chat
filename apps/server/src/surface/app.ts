@@ -143,7 +143,7 @@ const Delivery = z
     orgName: z.string(),
     locale: z.string().openapi({ description: "The account's app language, for the service's own words." }),
     createdAt: z.string(),
-    messageId: z.uuid().nullable().openapi({ description: "The right hand's message; null for `linked`." }),
+    messageId: z.uuid().nullable().openapi({ description: "The agent's message; null for `linked`." }),
     inReplyTo: z.uuid().nullable().openapi({ description: "The person's surface message the run read last." }),
     text: z.string().openapi({ description: "The message's Markdown as stored." }),
     files: z.array(
@@ -188,7 +188,7 @@ async function errorCode(res: Response): Promise<string | null> {
 
 /**
  * The bridge for an outside chat surface (ADR 0187): what a separate service calls to carry linked people's
- * messages to and from their DM with the right hand, behind its own bearer token. Served only by the operator
+ * messages to and from their DM with the agent their link names, behind its own bearer token. Served only by the operator
  * listener (`operatorFetch`), never by `createApp`.
  */
 export function createSurfaceApp(deps: AppDeps, token: string, version: string) {
@@ -325,7 +325,7 @@ export function createSurfaceApp(deps: AppDeps, token: string, version: string) 
       method: "post",
       path: "/messages",
       tags,
-      summary: "A linked sender's message, posted as them in their DM with the workspace's right hand",
+      summary: "A linked sender's message, posted as them in their DM with the agent its link names",
       description:
         "At least one of `text`, `files`, `voice`. A voice note that isn't one core takes (type, size, bytes over 8 KB a second of its length, voice off) goes in as a file named `voice.<ext>`. The DM is marked read up to the message.",
       request: { body: { required: true, content: { "multipart/form-data": { schema: Post } } } },
@@ -402,7 +402,7 @@ export function createSurfaceApp(deps: AppDeps, token: string, version: string) 
       method: "get",
       path: "/deliveries",
       tags,
-      summary: "What to send now: replies of the right hand to linked people, and links just made",
+      summary: "What to send now: replies of the link's agent to linked people, and links just made",
       description:
         "Oldest first, only rows not yet taken and younger than 5 minutes: anything older already reached the person in the app. Close each with `POST /deliveries/taken`.",
       request: { query: z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }) },
@@ -479,7 +479,7 @@ export function createSurfaceApp(deps: AppDeps, token: string, version: string) 
       title: "agentes.chat chat surface bridge",
       version,
       description:
-        "For the separate service that carries linked people's messages between an outside chat surface and their DM with the workspace's right hand (ADR 0187). Every call is recorded (route, answer, whom it touched; never content).",
+        "For the separate service that carries linked people's messages between an outside chat surface and their DM with the agent their link names (ADR 0187). Every call is recorded (route, answer, whom it touched; never content).",
     },
     servers: [{ url: SURFACE_PREFIX }],
     security: [{ surface: [] }],

@@ -7,14 +7,13 @@ import { ConflictError, NotFoundError, TooManyError, ValidationError } from "../
 import { fileIdsOf, MAX_MESSAGE_ATTACHMENTS, postPersonMessage, sentWithClientId } from "../messages";
 import { getMembership } from "../organizations";
 import { personLocale } from "../requester";
-import { lodiFor } from "../right-hand-proactive";
 import { acceptVoiceClip, type VoiceDeps } from "../voice";
 import { surfaceAllowed, surfaceOn } from "./config";
-import { activeLink, takeSurfaceCap } from "./links";
+import { activeLink, agentForLink, takeSurfaceCap } from "./links";
 
 /**
  * A linked sender's message from the outside chat surface (ADR 0187), posted as that person in their DM with the
- * workspace's right hand, so its run starts as for any DM message.
+ * agent its link names (the workspace's right hand when none is named), so its run starts as for any DM message.
  */
 
 const { voiceClips, surfaceLinks, users } = schema;
@@ -112,8 +111,8 @@ export async function postFromSurface(deps: SurfaceInboundDeps, input: SurfacePo
     if (clip) return answer(clip.messageId || clip.status === "dropped" ? "duplicate" : "queued", clip.messageId);
   }
 
-  const lodi = await lodiFor(db, orgId, userId);
-  if (!lodi)
+  const agent = await agentForLink(db, link);
+  if (!agent)
     throw new ConflictError("The assistant of this workspace can't talk to this person", "surface.no_assistant");
   if (input.files.length > MAX_MESSAGE_ATTACHMENTS) {
     throw new ValidationError(`At most ${MAX_MESSAGE_ATTACHMENTS} files per message`, "message.too_many_attachments");
@@ -122,7 +121,7 @@ export async function postFromSurface(deps: SurfaceInboundDeps, input: SurfacePo
   await takeLimit(deps.rateLimiter, `surface:post-day:${userId}`, PER_DAY, "day");
   await takeSurfaceCap({ db, rateLimiter: deps.rateLimiter, warn: deps.warn }, "posts");
 
-  const dm = await openPersonAgentDm(db, orgId, userId, lodi.id);
+  const dm = await openPersonAgentDm(db, orgId, userId, agent.id);
   const actor = { type: "person" as const, userId };
   const attachments: string[] = [];
   for (const file of input.files) {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { desc, eq, schema } from "@agenteschat/db";
+import { and, desc, eq, schema } from "@agenteschat/db";
 import { enableOperatorEvents, SURFACE_PREFIX, setSurface, sha256, surfaceFromConfig } from "@agenteschat/engine";
 import { createLogger } from "../src/logger";
 import { operatorFetch } from "../src/operator/app";
@@ -65,8 +65,8 @@ async function call(path: string, json: unknown, token: string | null = BRIDGE) 
 const claim = (code: string, externalId = "sender-1001", token: string | null = BRIDGE) =>
   call("/links/claim", { externalId, display: "+1 555 0100", profileName: "Ana A.", code }, token);
 
-async function mint(b: Browser = ana, orgId = anaOrg) {
-  const res = await b(`/api/app/organizations/${orgId}/surface-link/code`, { json: {} });
+async function mint(b: Browser = ana, orgId = anaOrg, json: Record<string, unknown> = {}) {
+  const res = await b(`/api/app/organizations/${orgId}/surface-link/code`, { json });
   return {
     status: res.status,
     body: (await res.json()) as { code: string; openUrl: string; error?: { code: string } },
@@ -77,7 +77,15 @@ const list = async (b: Browser = ana) =>
   (await (await b("/api/app/me/surface-links")).json()) as {
     surface: { name: string } | null;
     allowed: boolean;
-    links: { id: string; status: string; display: string | null; profileName: string | null; orgName: string | null }[];
+    links: {
+      id: string;
+      status: string;
+      display: string | null;
+      profileName: string | null;
+      orgName: string | null;
+      agentId: string | null;
+      agentName: string | null;
+    }[];
   };
 
 const errorCode = async (res: Response) => ((await res.json()) as { error?: { code: string } }).error?.code;
@@ -172,6 +180,23 @@ test("claim, list, confirm and delete; each claim is audited with the sender onl
 
   expect((await carla(`/api/app/me/surface-links/${linkId}`, { method: "DELETE" })).status).toBe(204);
   expect((await list(carla)).links).toEqual([]);
+});
+
+test("minting for an agent: unknown is surface.no_assistant, the right hand is the default", async () => {
+  const refused = await mint(ana, anaOrg, { agentId: Bun.randomUUIDv7() });
+  expect([refused.status, refused.body.error?.code]).toEqual([409, "surface.no_assistant"]);
+  const [rh] = await t.db
+    .select()
+    .from(schema.agents)
+    .where(and(eq(schema.agents.orgId, anaOrg), eq(schema.agents.builtin, "right_hand")));
+  if (!rh) throw new Error("no right hand");
+  const minted = await mint(ana, anaOrg, { agentId: rh.id });
+  expect(minted.status).toBe(201);
+  const claimed = await claim(minted.body.code, "sender-rh");
+  expect(claimed.status).toBe(201);
+  expect((await list()).links).toMatchObject([
+    { id: claimed.body.linkId, status: "pending", agentId: null, agentName: null },
+  ]);
 });
 
 test("unlink through the bridge: unlinked, then none", async () => {

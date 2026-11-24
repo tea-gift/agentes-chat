@@ -26,6 +26,8 @@ export const surfaceLinks = pgTable(
     profileName: text(),
     status: text().$type<"pending" | "active">().notNull(),
     orgId: uuid().references(() => organizations.id, { onDelete: "set null" }),
+    /** The agent the link talks to; null: the workspace's right hand (the default). */
+    agentId: uuid(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp({ withTimezone: true }),
     lastSeenAt: timestamp({ withTimezone: true }),
@@ -33,7 +35,9 @@ export const surfaceLinks = pgTable(
   (t) => [
     check("surface_links_status", sql`${t.status} in ('pending', 'active')`),
     uniqueIndex("surface_links_one_per_sender").on(t.surface, t.externalId).where(sql`${t.status} = 'active'`),
-    uniqueIndex("surface_links_one_per_account").on(t.userId, t.surface).where(sql`${t.status} = 'active'`),
+    uniqueIndex("surface_links_one_per_account_agent")
+      .on(t.userId, t.surface, sql`coalesce(${t.agentId}, '00000000-0000-0000-0000-000000000000'::uuid)`)
+      .where(sql`${t.status} = 'active'`),
     index().on(t.userId),
   ],
 );

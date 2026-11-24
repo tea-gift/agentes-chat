@@ -138,6 +138,23 @@ test("text from a linked sender is the person's DM message to the right hand, an
   expect(row?.lastSeenAt).toBeInstanceOf(Date);
 });
 
+test("text from a sender linked to a named agent is that agent's DM message, and starts its run", async () => {
+  const { code } = await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id);
+  const { link } = await claimLink(
+    { db: f.db },
+    { externalId: SENDER, display: "+1 555 0100", profileName: "Ana", code },
+  );
+  await confirmLink({ db: f.db }, f.owner.id, link.id);
+  const posted = await post({ text: "What's on today?" });
+  expect(posted).toMatchObject({ status: "posted", orgId: f.org.id });
+  const m = await messageOf(posted.messageId);
+  expect(m.body).toBe("What's on today?");
+  const [channel] = await f.db.select().from(schema.channels).where(eq(schema.channels.id, m.channelId));
+  expect(channel?.kind).toBe("dm");
+  const runs = await f.db.select().from(agentRuns).where(eq(agentRuns.triggerMessageId, m.id));
+  expect(runs.map((r) => r.agentId)).toEqual([f.agent.id]);
+});
+
 test("the same inbound id twice: one message, the second a duplicate that spends no limit", async () => {
   await link();
   const first = await post({ inboundId: "in-1", text: "hi" });

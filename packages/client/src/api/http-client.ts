@@ -656,7 +656,8 @@ export function createHttpApi(options: TransportOptions = {}): HttpApi {
     },
     surfaces: {
       list: () => request<SurfaceLinks>("/api/app/me/surface-links"),
-      mintCode: (orgId) => request<SurfaceLinkCode>(`${org(orgId)}/surface-link/code`, { json: {} }),
+      mintCode: (orgId, agentId) =>
+        request<SurfaceLinkCode>(`${org(orgId)}/surface-link/code`, { json: agentId ? { agentId } : {} }),
       confirm: (linkId) => request<SurfaceLink>(`/api/app/me/surface-links/${enc(linkId)}/confirm`, { json: {} }),
       remove: (linkId) => request<void>(`/api/app/me/surface-links/${enc(linkId)}`, { method: "DELETE" }),
       undo: (token) =>

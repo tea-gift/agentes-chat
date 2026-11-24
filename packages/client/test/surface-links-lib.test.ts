@@ -8,7 +8,14 @@ import type { SurfaceLink, SurfaceLinks } from "../src/api/types";
 import { ApiError } from "../src/index";
 import { errorText } from "../src/lib/errors";
 import { rightHandName } from "../src/lib/right-hand";
-import { CODE_TTL_MS, codeDeadline, newlyLinked, surfaceRowOf, surfaceViaName } from "../src/lib/surface-links";
+import {
+  CODE_TTL_MS,
+  codeDeadline,
+  newlyLinked,
+  surfaceLinksOf,
+  surfaceRowOf,
+  surfaceViaName,
+} from "../src/lib/surface-links";
 import { appVia, surfaceVia } from "../src/lib/via";
 
 const NOW = Date.parse("2026-01-10T12:00:00Z");
@@ -19,6 +26,8 @@ const link = (extra: Partial<SurfaceLink> = {}): SurfaceLink => ({
   profileName: "Ana",
   orgId: "o1",
   orgName: "Acme",
+  agentId: null,
+  agentName: null,
   createdAt: "2026-01-10T11:00:00Z",
   confirmedAt: "2026-01-10T11:01:00Z",
   expiresAt: null,
@@ -73,6 +82,27 @@ describe("what the surface row shows", () => {
     const late = pending("2026-01-10T11:59:59Z");
     expect(surfaceRowOf(answer([late]), NOW)).toEqual({ kind: "none", surface: "Example Chat" });
     expect(surfaceRowOf(answer([link(), late]), NOW)).toMatchObject({ kind: "active", link: { id: "l1" } });
+  });
+});
+
+describe("the list of connections", () => {
+  test("hidden when the server bridges none, or this account may not link", () => {
+    expect(surfaceLinksOf(undefined, NOW)).toBeNull();
+    expect(surfaceLinksOf(answer([link()], { allowed: false }), NOW)).toBeNull();
+  });
+
+  test("every live link, pending or active, with its agent; an expired pending drops out", () => {
+    const named = link({ id: "l2", agentId: "a1", agentName: "mu1" });
+    const waiting = pending("2026-01-10T12:05:00Z");
+    const late = pending("2026-01-10T11:59:59Z");
+    expect(surfaceLinksOf(answer([link(), named, waiting, late]), NOW)).toEqual({
+      surface: "Example Chat",
+      links: [link(), named, waiting],
+    });
+  });
+
+  test("no live link is an empty list, not hidden", () => {
+    expect(surfaceLinksOf(answer([]), NOW)).toEqual({ surface: "Example Chat", links: [] });
   });
 });
 

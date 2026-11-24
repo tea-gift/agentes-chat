@@ -2604,6 +2604,8 @@ export const en = {
         "{{assistant}} by agentes.chat may message you on {{surface}} about your workspaces, and call you only when something is urgent and you allow it. Write stop to turn this off.",
       /** The link dialog's title. {{assistant}} is the workspace's built-in assistant by name. */
       title: "Talk to {{assistant}} on {{surface}}",
+      /** Who answers on the surface: the built-in assistant, or an agent the person picks. */
+      agent: "Who answers",
       qr: "QR code that opens {{surface}} with your code typed in",
       making: "Making your code",
       /** Under the QR code: the code itself, for typing it by hand. */
@@ -2631,6 +2633,8 @@ export const en = {
     row: {
       hint: "Talk with {{assistant}} and get its replies on {{surface}}.",
       link: "Link",
+      /** The row that adds another connection, talking to another agent. */
+      linkAnother: "Add another connection",
       /**
        * Behind the ⓘ beside the app's name while nothing is linked. {{assistant}} is the workspace's built-in assistant
        * by name.

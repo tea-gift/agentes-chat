@@ -536,7 +536,7 @@ export interface ApiClient {
      * A code to type on the surface, answering in `orgId` once confirmed. `surface.off` (404), `surface.not_allowed`
      * or `forbidden` (403), `surface.no_assistant` (409), `rate_limited` (429).
      */
-    mintCode(orgId: string): Promise<SurfaceLinkCode>;
+    mintCode(orgId: string, agentId?: string | null): Promise<SurfaceLinkCode>;
     /** The pending link's sender is me. `surface.link_gone` (404), `surface.taken` and the workspace's refusals (409). */
     confirm(linkId: string): Promise<SurfaceLink>;
     /** Cancels a pending link or unlinks an active one. `surface.link_gone` (404). */

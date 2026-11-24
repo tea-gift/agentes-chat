@@ -17,11 +17,23 @@ import {
   LINK_POLL_MS,
   newlyLinked,
   RENEW_BEFORE_MS,
+  surfaceLinksOf,
   surfaceMarkUrl,
-  surfaceRowOf,
 } from "@agenteschat/client/lib/surface-links";
 import { formatPhone } from "@agenteschat/i18n/format";
-import { Alert, Button, Dialog, DialogBody, DialogFooter, Icon, PixelSpinner, QrCode, useNow } from "@agenteschat/ui";
+import {
+  Alert,
+  Button,
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  Field,
+  Icon,
+  PixelSpinner,
+  QrCode,
+  Select,
+  useNow,
+} from "@agenteschat/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -76,8 +88,8 @@ function useAssistantName(orgId: string): string | null {
 
 /**
  * Settings › Notifications › Where they arrive (ADR 0187): the outside chat surface, only for an account the server
- * lets link it. None: Link. A sender waiting on the person's confirm: the line opens the dialog at that step. Linked:
- * the sender as the surface shows it, with Unlink.
+ * lets link it. One row per connection: the sender as the surface shows it, with Unlink; a sender waiting on the
+ * person's confirm opens the dialog at that step. A last row links another sender, talking to another agent.
  */
 export function SurfacePrefRow() {
   const { t } = useTranslation();
@@ -85,55 +97,63 @@ export function SurfacePrefRow() {
   const links = useSurfaceLinks();
   const remove = useRemoveSurfaceLink();
   const { org } = useOrg();
-  const assistant = useAssistantName(org.id) ?? t("rightHand.labelCapitalized");
+  const rightHand = useAssistantName(org.id) ?? t("rightHand.labelCapitalized");
   const [open, setOpen] = useOpenParam("link");
   const [unlinking, setUnlinking] = useState<SurfaceLink | null>(null);
-  const row = surfaceRowOf(links.data);
-  if (row.kind === "hidden") return null;
-  const { surface } = row;
-  const sender =
-    row.kind === "active"
-      ? [row.link.display && formatPhone(row.link.display), row.link.profileName].filter(Boolean)
-      : [];
-
+  const list = surfaceLinksOf(links.data);
+  if (!list) return null;
+  const { surface, links: rows } = list;
+  const agentOf = (link: SurfaceLink) => link.agentName ?? rightHand;
   return (
     <>
+      {rows.map((link) => {
+        const sender =
+          link.status === "active" ? [link.display && formatPhone(link.display), link.profileName].filter(Boolean) : [];
+        return (
+          <PrefRow
+            key={link.id}
+            id={`notice-surface-${link.id}`}
+            lead={<SurfaceMark name={surface} />}
+            label={surface}
+            hint={t("surface.row.hint", { assistant: agentOf(link), surface })}
+            status={
+              link.status === "pending" ? (
+                t("surface.row.pending")
+              ) : sender.length > 0 ? (
+                <span className="surface-sender__line">
+                  {sender.map((s, i) => (
+                    <span key={s}>
+                      {i > 0 && " · "}
+                      <bdi>{s}</bdi>
+                    </span>
+                  ))}
+                </span>
+              ) : undefined
+            }
+            onOpen={link.status === "pending" ? () => setOpen(1) : undefined}
+            control={
+              link.status === "active" ? (
+                <Button size="sm" icon="block" onClick={() => setUnlinking(link)}>
+                  {t("surface.row.unlink")}
+                </Button>
+              ) : (
+                <Button size="sm" icon="link" onClick={() => setOpen(1)}>
+                  {t("surface.row.link")}
+                </Button>
+              )
+            }
+          />
+        );
+      })}
       <PrefRow
-        id="notice-surface"
+        id="notice-surface-add"
         lead={<SurfaceMark name={surface} />}
         label={surface}
-        hint={
-          row.kind === "active"
-            ? t("surface.row.hint", { assistant, surface })
-            : row.kind === "none"
-              ? t("surface.row.none", { assistant })
-              : undefined
-        }
-        status={
-          row.kind === "pending" ? (
-            t("surface.row.pending")
-          ) : sender.length > 0 ? (
-            <span className="surface-sender__line">
-              {sender.map((s, i) => (
-                <span key={s}>
-                  {i > 0 && " · "}
-                  <bdi>{s}</bdi>
-                </span>
-              ))}
-            </span>
-          ) : undefined
-        }
-        onOpen={row.kind === "pending" ? () => setOpen(1) : undefined}
+        hint={t("surface.row.linkAnother")}
         control={
-          row.kind === "active" ? (
-            <Button size="sm" icon="block" onClick={() => setUnlinking(row.link)}>
-              {t("surface.row.unlink")}
-            </Button>
-          ) : (
-            <Button size="sm" icon="link" onClick={() => setOpen(1)}>
-              {t("surface.row.link")}
-            </Button>
-          )
+          <Button size="sm" icon="link" onClick={() => setOpen(1)}>
+            {t("surface.row.link")}
+          </Button>
         }
       />
       <SurfaceLinkDialog open={open !== null} onClose={() => setOpen(null)} />
@@ -141,7 +161,7 @@ export function SurfacePrefRow() {
         open={unlinking !== null}
         onOpenChange={(o) => !o && !remove.isPending && setUnlinking(null)}
         title={t("surface.row.unlinkTitle", { surface })}
-        description={t("surface.row.unlinkText", { assistant })}
+        description={t("surface.row.unlinkText", { assistant: unlinking ? agentOf(unlinking) : rightHand })}
         closeLabel={t("common.close")}
         width={440}
       >
@@ -187,6 +207,9 @@ export function SurfaceLinkDialog({ open, onClose }: { open: boolean; onClose: (
   const [sent, setSent] = useState(false);
   const [linked, setLinked] = useState<SurfaceLink | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
+  /** The agent the new link talks to; null: the workspace's built-in assistant. */
+  const [agentId, setAgentId] = useState<string | null>(null);
+  const agents = useAgents(org.id).data;
   // The active links when the dialog opened: one more, confirmed on another device, ends it as linked.
   const [before, setBefore] = useState<string[] | null>(null);
   const data = links.data;
@@ -196,6 +219,7 @@ export function SurfaceLinkDialog({ open, onClose }: { open: boolean; onClose: (
       setLinked(null);
       setFailure(null);
       setBefore(null);
+      setAgentId(null);
     } else if (data) setBefore((b) => b ?? data.links.filter((l) => l.status === "active").map((l) => l.id));
   }, [open, data]);
 
@@ -205,19 +229,24 @@ export function SurfaceLinkDialog({ open, onClose }: { open: boolean; onClose: (
     enabled: open,
     refetchInterval: LINK_POLL_MS,
   });
-  const row = surfaceRowOf(links.data);
-  const surface = row.kind === "hidden" ? "" : row.surface;
-  const pending = row.kind === "pending" ? row.link : null;
+  const list = surfaceLinksOf(links.data);
+  const surface = list?.surface ?? "";
+  // The pending link for the code this dialog minted: the one answering with the picked agent.
+  const pendings = list?.links.filter((l) => l.status === "pending") ?? [];
+  const pending = pendings.find((l) => (l.agentId ?? null) === agentId) ?? pendings[0] ?? null;
   const done = linked ?? (before && newlyLinked(links.data, before));
   const step = done ? "done" : failure ? "failed" : pending ? "confirm" : sent ? "wait" : "code";
   // The link answers in its own workspace, which may not be the one these settings are in (a code made elsewhere).
-  const assistant = useAssistantName((done ?? pending)?.orgId ?? org.id);
+  const rightHand = useAssistantName((done ?? pending)?.orgId ?? org.id);
+  const picked = agentId ? agents?.find((a) => a.id === agentId) : null;
+  const assistant = (done ?? pending)?.agentName ?? picked?.name ?? rightHand;
   const named = assistant ?? t("rightHand.labelCapitalized");
+  const rightHandHere = useAssistantName(org.id) ?? t("rightHand.labelCapitalized");
 
   const code = useQuery({
-    queryKey: ["surfaceLinkCode", org.id],
+    queryKey: ["surfaceLinkCode", org.id, agentId],
     queryFn: async () => {
-      const minted = await api.surfaces.mintCode(org.id);
+      const minted = await api.surfaces.mintCode(org.id, agentId);
       return { ...minted, endsAt: codeDeadline(minted, Date.now()) };
     },
     enabled: open && (step === "code" || step === "wait"),
@@ -358,6 +387,21 @@ export function SurfaceLinkDialog({ open, onClose }: { open: boolean; onClose: (
         </DialogBody>
       ) : (
         <DialogBody className="surface-link">
+          {step === "code" && (
+            <Field label={t("surface.link.agent")}>
+              <Select
+                aria-label={t("surface.link.agent")}
+                value={agentId ?? ""}
+                onValueChange={(v) => setAgentId(v === "" ? null : v)}
+                options={[
+                  { value: "", label: rightHandHere },
+                  ...(agents ?? [])
+                    .filter((a) => a.builtin !== "right_hand" && a.canTalk !== false)
+                    .map((a) => ({ value: a.id, label: a.name })),
+                ]}
+              />
+            </Field>
+          )}
           {step === "code" && (
             <div className="phone-code">
               <div className="phone-code__qr" data-loading={!openUrl || undefined}>

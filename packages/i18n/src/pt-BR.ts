@@ -2493,6 +2493,8 @@ export const ptBR = {
       consent:
         "{{assistant}} do agentes.chat pode mandar mensagens no {{surface}} sobre seus workspaces, e ligar só quando for urgente e você permitir. Escreva parar para desativar.",
       title: "Fale com {{assistant}} no {{surface}}",
+      /** Who answers on the surface: the built-in assistant, or an agent the person picks. */
+      agent: "Quem responde",
       qr: "QR code que abre o {{surface}} com o seu código digitado",
       making: "Gerando seu código",
       code: "Seu código {{code}}",
@@ -2516,6 +2518,8 @@ export const ptBR = {
     row: {
       hint: "Fale com {{assistant}} e receba as respostas no {{surface}}.",
       link: "Vincular",
+      /** The row that adds another connection, talking to another agent. */
+      linkAnother: "Adicionar outra conexão",
       none: "{{assistant}} pode mandar mensagens para você lá",
       pending: "Um remetente espera a sua confirmação",
       unlink: "Desvincular",

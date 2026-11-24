@@ -22,6 +22,21 @@ export function surfaceRowOf(data: SurfaceLinks | null | undefined, now = Date.n
   return active ? { kind: "active", surface, link: active } : { kind: "none", surface };
 }
 
+/**
+ * Every link that still counts, in the server's order: active ones, and pending ones not past their time. Null when
+ * the server bridges no surface or this account may not link it.
+ */
+export function surfaceLinksOf(
+  data: SurfaceLinks | null | undefined,
+  now = Date.now(),
+): { surface: string; links: SurfaceLink[] } | null {
+  if (!data?.surface || !data.allowed) return null;
+  const links = data.links.filter(
+    (l) => l.status === "active" || (l.status === "pending" && (!l.expiresAt || Date.parse(l.expiresAt) > now)),
+  );
+  return { surface: data.surface.name, links };
+}
+
 /** While a code waits to come back from the surface, the links are read this often besides the live event. */
 export const LINK_POLL_MS = 3000;
 

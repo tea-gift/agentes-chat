@@ -172,6 +172,41 @@ test("confirming a new sender replaces the account's old link", async () => {
   expect(await activeLink(f.db, SENDER)).toBeNull();
 });
 
+test("a code for a named agent claims and confirms into a link for that agent, and leaves the right hand's link alone", async () => {
+  const rh = await claim(await codeOf());
+  await confirmLink(deps(), f.owner.id, rh.link.id);
+  const named = await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id);
+  const claimed = await claim(named.code, "sender-mu1");
+  expect(claimed.link.agentId).toBe(f.agent.id);
+  const view = await confirmLink(deps(), f.owner.id, claimed.link.id);
+  expect(view).toMatchObject({ status: "active", agentId: f.agent.id, agentName: "Dev" });
+  const active = (await links()).filter((l) => l.status === "active");
+  expect(active.map((l) => [l.externalId, l.agentId])).toEqual([
+    [SENDER, null],
+    ["sender-mu1", f.agent.id],
+  ]);
+});
+
+test("confirming a second link for the same agent replaces that agent's old link, not another agent's", async () => {
+  const first = await claim((await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id)).code);
+  await confirmLink(deps(), f.owner.id, first.link.id);
+  const second = await claim((await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id)).code, "sender-mu1-new");
+  await confirmLink(deps(), f.owner.id, second.link.id);
+  const rows = await links();
+  expect(rows.map((l) => [l.externalId, l.status])).toEqual([["sender-mu1-new", "active"]]);
+});
+
+test("minting for an agent that is gone is surface.no_assistant", async () => {
+  expect(await errorOf(mintLinkCode(f.db, f.owner.id, f.org.id, "00000000-0000-0000-0000-000000000000"))).toBe(
+    "surface.no_assistant",
+  );
+});
+
+test("minting for an archived agent is surface.no_assistant", async () => {
+  await f.db.update(schema.agents).set({ archivedAt: new Date() }).where(eq(schema.agents.id, f.agent.id));
+  expect(await errorOf(mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id))).toBe("surface.no_assistant");
+});
+
 test("confirm checks the workspace again: not a member, or the right hand can't talk to them", async () => {
   const bea = await addMember(f.db, f.org.id, "member", "bea");
   const left = await claim(await codeOf(bea.id), "sender-bea");

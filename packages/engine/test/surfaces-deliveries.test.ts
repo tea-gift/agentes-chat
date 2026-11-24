@@ -177,6 +177,87 @@ test("a surface message's reply from the right hand is one delivery, with no in-
   expect((job?.nextAttemptAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(4 * 60_000);
 });
 
+test("a surface message's reply from a named agent is one delivery, with no in-app notification or push", async () => {
+  const { code } = await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id);
+  const { link: claimed } = await claimLink(
+    { db: f.db },
+    { externalId: SENDER, display: "+1 555 0100", profileName: "Ana", code },
+  );
+  await confirmLink({ db: f.db }, f.owner.id, claimed.id);
+  await f.db.delete(surfaceDeliveries);
+  const posted = await postFromSurface(
+    {
+      db: f.db,
+      pubsub: f.pubsub,
+      judge: f.context.judge,
+      artifacts: f.artifactDeps,
+      voice: null,
+      rateLimiter: createMemoryRateLimiter(),
+    },
+    { externalId: SENDER, inboundId: "in-1", text: "What's on today?", files: [] },
+  );
+  await drainOutbox(f.db, f.handlers);
+  const rows = await deliveries();
+  expect(rows).toHaveLength(1);
+  const [row] = rows;
+  expect(row).toMatchObject({ kind: "reply", inReplyTo: posted.messageId, takenAt: null });
+  const [answer] = await f.db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.orgId, f.org.id), eq(messages.id, row?.messageId ?? "")));
+  expect(answer?.authorAgentId).toBe(f.agent.id);
+  expect((await notificationsOf()).filter((n) => n.kind === "agent_reply")).toEqual([]);
+});
+
+test("a reply from another agent is never a surface delivery, even in the link's DM", async () => {
+  const { code } = await mintLinkCode(f.db, f.owner.id, f.org.id, f.agent.id);
+  const { link: claimed } = await claimLink(
+    { db: f.db },
+    { externalId: SENDER, display: "+1 555 0100", profileName: "Ana", code },
+  );
+  const { id: linkId } = await confirmLink({ db: f.db }, f.owner.id, claimed.id);
+  // The "linked" notice is not under test here.
+  await f.db.delete(surfaceDeliveries);
+  const dm = await openPersonAgentDm(f.db, f.org.id, f.owner.id, f.agent.id);
+  const trigger = await insertMessage(f.db, {
+    orgId: f.org.id,
+    channelId: dm.id,
+    author: { type: "person", userId: f.owner.id },
+    body: "hi",
+    meta: { via: { kind: "surface", surface: "example chat", linkId } },
+  });
+  const [run] = await f.db
+    .insert(agentRuns)
+    .values({
+      orgId: f.org.id,
+      agentId: f.agent.id,
+      channelId: dm.id,
+      threadRootId: trigger.id,
+      triggerMessageId: trigger.id,
+      trigger: "dm",
+      hop: 1,
+      status: "done",
+    })
+    .returning();
+  if (!run) throw new Error("no run");
+  const wrong = await insertMessage(f.db, {
+    orgId: f.org.id,
+    channelId: dm.id,
+    author: { type: "agent", agentId: (await lodi()).id, runId: run.id, hop: 1 },
+    body: "Not mine.",
+  });
+  expect(await queueSurfaceDelivery(f.db, f.org.id, wrong.id)).toBe(false);
+  expect(await deliveries()).toEqual([]);
+  const right = await insertMessage(f.db, {
+    orgId: f.org.id,
+    channelId: dm.id,
+    author: { type: "agent", agentId: f.agent.id, runId: run.id, hop: 1 },
+    body: "Done.",
+  });
+  expect(await queueSurfaceDelivery(f.db, f.org.id, right.id)).toBe(true);
+  expect(await deliveries()).toHaveLength(1);
+});
+
 test("the turn follows the latest person message the run read: a steered surface message counts, and the reverse", async () => {
   const { id: linkId } = await link();
   const fromApp = await said("from the app");

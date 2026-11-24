@@ -26,19 +26,18 @@ import { notifyMessage, quietForPeople } from "../notification-producers";
 import { getMembership } from "../organizations";
 import { enqueue } from "../outbox";
 import { personLocale } from "../requester";
-import { RIGHT_HAND } from "../right-hand";
-import { lodiFor, postFromLodi } from "../right-hand-proactive";
+import { postFromLodi } from "../right-hand-proactive";
 import { surfaceOn } from "./config";
-import { activeLinkOf } from "./links";
+import { activeLinkOf, agentForLink } from "./links";
 
 /**
- * Replies of the right hand that go out on the outside chat surface (ADR 0187) instead of an in-app notification.
+ * Replies of the link's agent that go out on the outside chat surface (ADR 0187) instead of an in-app notification.
  * The surface's service pulls them, sends them and says which it sent. Anything it doesn't take within
  * `SURFACE_FALLBACK_MS`, or says it couldn't send, falls back to the in-app notification. Nothing older than that
  * is listed, so a service back from an outage never sends stale replies.
  */
 
-const { surfaceDeliveries, surfaceLinks, surfaceCalls, messages, agentRuns, agents, channels, channelMembers } = schema;
+const { surfaceDeliveries, surfaceLinks, surfaceCalls, messages, agentRuns, channels, channelMembers } = schema;
 
 export const SURFACE_FALLBACK_MS = 5 * 60_000;
 export const SURFACE_FALLBACK_JOB = "surface.fallback";
@@ -110,7 +109,7 @@ export async function surfaceOfRun(
 }
 
 /**
- * Called by the message's `notifications.message` job: a reply of the right hand to a surface turn, in the linked
+ * Called by the message's `notifications.message` job: a reply of the link's agent to a surface turn, in the linked
  * person's DM with it, becomes a delivery (and its fallback job) instead of an in-app notification. False, with
  * nothing written, for anything else.
  */
@@ -122,12 +121,11 @@ export async function queueSurfaceDelivery(db: Database, orgId: string, messageI
       createdAt: messages.createdAt,
       channelId: messages.channelId,
       runId: messages.agentRunId,
+      authorAgentId: messages.authorAgentId,
       meta: messages.meta,
-      builtin: agents.builtin,
       channelKind: channels.kind,
     })
     .from(messages)
-    .innerJoin(agents, eq(agents.id, messages.authorAgentId))
     .innerJoin(channels, eq(channels.id, messages.channelId))
     .where(
       and(
@@ -137,7 +135,7 @@ export async function queueSurfaceDelivery(db: Database, orgId: string, messageI
         isNull(messages.deletedAt),
       ),
     );
-  if (!message?.runId || message.builtin !== RIGHT_HAND || message.channelKind !== "dm") return false;
+  if (!message?.runId || message.channelKind !== "dm") return false;
   if (quietForPeople(message.meta) || isMediaAfterReply(message.meta)) return false;
   const turn = await surfaceOfRun(db, orgId, message.runId);
   if (!turn) return false;
@@ -152,8 +150,11 @@ export async function queueSurfaceDelivery(db: Database, orgId: string, messageI
       ),
     );
   if (!member) return false;
-  const link = await activeLinkOf(db, turn.userId);
-  if (!link || link.orgId !== orgId) return false;
+  // The link the run's trigger came through: with several links per account, the account's one is the wrong one.
+  const [link] = await db.select().from(surfaceLinks).where(eq(surfaceLinks.id, turn.linkId));
+  if (link?.status !== "active" || link?.orgId !== orgId) return false;
+  const agent = await agentForLink(db, link);
+  if (!agent || agent.id !== message.authorAgentId) return false;
   await db.transaction((tx) => insertReply(tx, { orgId, linkId: link.id, message, inReplyTo: turn.messageId }));
   return true;
 }
@@ -200,7 +201,13 @@ export async function tellSurfaceVoiceDropped(
   if (!surface || clip.via.kind !== "surface") return;
   const link = await activeLinkOf(deps.db, clip.userId);
   if (!link || link.orgId !== clip.orgId || link.id !== clip.via.linkId) return;
-  const id = await postFromLodi(deps, clip.orgId, clip.userId, { bodyCode: "surfaceVoiceDropped", push: false });
+  const agent = await agentForLink(deps.db, link);
+  if (!agent) return;
+  const id = await postFromLodi(deps, clip.orgId, clip.userId, {
+    bodyCode: "surfaceVoiceDropped",
+    push: false,
+    lodi: agent,
+  });
   if (!id) return;
   const [message] = await deps.db
     .select({ id: messages.id, createdAt: messages.createdAt })
@@ -274,7 +281,7 @@ const openSince = () => new Date(Date.now() - SURFACE_FALLBACK_MS);
 
 /**
  * What the service should send now, oldest first: open rows younger than `SURFACE_FALLBACK_MS`. Each is checked
- * again: a link that ended falls back to the app; a person no longer in the workspace, or a right hand that may no
+ * again: a link that ended falls back to the app; a person no longer in the workspace, or an agent that may no
  * longer talk to them, drops it.
  */
 export async function listSurfaceDeliveries(deps: DeliveryDeps, limit: number): Promise<SurfaceDeliveryView[]> {
@@ -296,7 +303,7 @@ export async function listSurfaceDeliveries(deps: DeliveryDeps, limit: number): 
     const membership = await getMembership(db, link.userId, row.orgId);
     const message = row.messageId ? await messageOf(db, row.orgId, row.messageId, row.messageCreatedAt) : null;
     const gone = row.kind === "reply" && (!message || message.deletedAt);
-    if (!membership || gone || !(await lodiFor(db, row.orgId, link.userId))) {
+    if (!membership || gone || !(await agentForLink(db, link))) {
       await close(db, [row.id], "dropped");
       continue;
     }
