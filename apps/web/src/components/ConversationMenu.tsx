@@ -1,12 +1,14 @@
-import type { Agent, Member } from "@agenteschat/client";
-import { Button, Menu } from "@agenteschat/ui";
+import { type Agent, type Member, useClearDm } from "@agenteschat/client";
+import { Button, Dialog, DialogFooter, Menu } from "@agenteschat/ui";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MenuEntries } from "@/components/DesktopMenus";
 import { useAgentMenu, usePersonMenu } from "@/components/entity-menus";
+import { useOrg } from "@/components/org-context";
 import { colorOf } from "@/components/Sky";
 import { type WallpaperConversation, WallpaperDialog } from "@/components/WallpaperDialog";
 import type { MenuEntry } from "@/lib/context-menu";
+import { useToast } from "@/lib/toast";
 
 /** In a DM's own header, what would only lead back to it: its DM, a mention of the one already here. */
 const SELF_IN_DM = new Set(["dm", "mention"]);
@@ -78,6 +80,9 @@ export function DmMoreMenu({
   agent?: Agent;
   person?: Member;
 }) {
+  const { t } = useTranslation();
+  const { org } = useOrg();
+  const toast = useToast();
   const agentEntries = useAgentMenu();
   const personEntries = usePersonMenu();
   const wallpaper = useConversationWallpaperMenu({
@@ -86,18 +91,69 @@ export function DmMoreMenu({
     name,
     agentColor: agent ? colorOf(agent) : null,
   });
-  const build = () => {
+  // The clear, and the confirmation it asks first: every message of this DM goes, and there is no undo.
+  const [clearing, setClearing] = useState(false);
+  const clear = useClearDm(org.id);
+  const build = (): MenuEntry[] => {
     const entries = agent
       ? agentEntries(agent, [wallpaper.entry])
       : person
         ? withEntry(personEntries(person), wallpaper.entry)
         : [wallpaper.entry];
-    return entries.filter((e) => !(e.kind === "item" && SELF_IN_DM.has(e.id)));
+    const filtered = entries.filter((e) => !(e.kind === "item" && SELF_IN_DM.has(e.id)));
+    return [
+      ...filtered,
+      { kind: "separator" },
+      {
+        kind: "item",
+        id: "clear-conversation",
+        label: t("dm.clearConversation"),
+        icon: "trash",
+        danger: true,
+        run: () => setClearing(true),
+      },
+    ];
   };
   return (
     <>
       <ConversationMoreMenu build={build} />
       {wallpaper.dialog}
+      {clearing && (
+        <Dialog
+          open
+          onOpenChange={(open) => !open && setClearing(false)}
+          title={t("dm.clearTitle")}
+          description={t("dm.clearText")}
+          closeLabel={t("common.close")}
+          width={460}
+        >
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setClearing(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              icon="trash"
+              disabled={clear.isPending}
+              loading={clear.isPending}
+              onClick={() =>
+                clear.mutate(
+                  { channelId },
+                  {
+                    onSuccess: () => {
+                      toast.show(t("dm.cleared"));
+                      setClearing(false);
+                    },
+                  },
+                )
+              }
+            >
+              {t("dm.clearConversation")}
+            </Button>
+          </DialogFooter>
+        </Dialog>
+      )}
     </>
   );
 }

@@ -2026,6 +2026,28 @@ function messageEdit(orgId: string, channelId: string, messageId: string, patch:
   );
 }
 
+/** One message gone from each loaded list of its conversation and threads, before the server answers. */
+function messageRemove(orgId: string, channelId: string, messageId: string) {
+  return editWhere<unknown>(
+    ["org", orgId, "channel", channelId],
+    (q) => isMessageList(q.queryKey),
+    (data) => {
+      if (!Array.isArray(data)) return data;
+      const list = data as Message[];
+      return list.some((m) => m?.id === messageId) ? list.filter((m) => m?.id !== messageId) : data;
+    },
+  );
+}
+
+/** Every message gone from each loaded list of its conversation and threads, before the server answers. */
+function messagesClear(orgId: string, channelId: string) {
+  return editWhere<unknown>(
+    ["org", orgId, "channel", channelId],
+    (q) => isMessageList(q.queryKey),
+    (data) => (Array.isArray(data) && data.length > 0 ? [] : data),
+  );
+}
+
 /** A message as this client holds it, from any loaded list of its conversation or its threads. */
 function cachedMessage(qc: QueryClient, orgId: string, channelId: string, messageId: string): Message | undefined {
   for (const [, data] of qc.getQueriesData<Message[]>({
@@ -4609,6 +4631,35 @@ export function cachePinned(
     if (!list.some((m) => m && m.id === messageId)) return data;
     return list.map((m) => (m.id === messageId ? { ...m, pinned } : m));
   });
+}
+
+/**
+ * `message.deleted` live: the message leaves every cached list of its
+ * conversation and threads (the timeline and the thread views).
+ */
+export function dropMessage(
+  qc: ReturnType<typeof useQueryClient>,
+  orgId: string,
+  channelId: string,
+  messageId: string,
+) {
+  qc.setQueriesData({ queryKey: ["org", orgId, "channel", channelId] }, (data: unknown) => {
+    if (!Array.isArray(data)) return data;
+    const list = data as Message[];
+    if (!list.some((m) => m && m.id === messageId)) return data;
+    return list.filter((m) => m.id !== messageId);
+  });
+}
+
+/**
+ * `dm.cleared` live: every cached message list of the conversation empties
+ * (the timeline and the thread views); the lists read again on their own.
+ */
+export function dropChannelMessages(qc: ReturnType<typeof useQueryClient>, orgId: string, channelId: string) {
+  qc.setQueriesData(
+    { queryKey: ["org", orgId, "channel", channelId], predicate: (q) => isMessageList(q.queryKey) },
+    (data: unknown) => (Array.isArray(data) && data.length > 0 ? [] : data),
+  );
 }
 
 /**
@@ -8341,6 +8392,39 @@ export function usePinMessage(orgId: string) {
       void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
       void qc.invalidateQueries({ queryKey: keys.messages(orgId, channelId) });
       void qc.invalidateQueries({ queryKey: ["org", orgId, "channel", channelId, "thread"] });
+    },
+  });
+}
+
+/** Delete one message of a DM; the message leaves the conversation at once (a refusal brings it back). */
+export function useDeleteDmMessage(orgId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ channelId, messageId }: { channelId: string; messageId: string }) =>
+      api.dms.deleteMessage(orgId, channelId, messageId),
+    ...optimistic(qc, ({ channelId, messageId }: { channelId: string; messageId: string }) => [
+      messageRemove(orgId, channelId, messageId),
+    ]),
+    onSuccess: (_v, { channelId }) => {
+      void qc.invalidateQueries({ queryKey: keys.messages(orgId, channelId) });
+      void qc.invalidateQueries({ queryKey: keys.dms(orgId) });
+      void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
+    },
+  });
+}
+
+/** Clear a whole DM; every message of it leaves at once (a refusal brings them back). */
+export function useClearDm(orgId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ channelId }: { channelId: string }) => api.dms.clear(orgId, channelId),
+    ...optimistic(qc, ({ channelId }: { channelId: string }) => [messagesClear(orgId, channelId)]),
+    onSuccess: (_v, { channelId }) => {
+      void qc.invalidateQueries({ queryKey: keys.messages(orgId, channelId) });
+      void qc.invalidateQueries({ queryKey: keys.dms(orgId) });
+      void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
     },
   });
 }

@@ -2001,6 +2001,9 @@ export const en = {
     unpin: "Unpin message",
     pinned: "Message pinned.",
     unpinned: "Message unpinned.",
+    /** A DM's message, in its menu: gone from the conversation at once. */
+    deleteMessage: "Delete message",
+    messageDeleted: "Message deleted.",
     open: "Open",
     openInBrowser: "Open in browser",
     download: "Download",
@@ -4315,6 +4318,11 @@ export const en = {
     emptyAgent_female: "Ask her to remember, forget or work differently.",
     opening: "Opening the conversation…",
     title: "Direct message with {{name}}",
+    /** A DM header's ⋯: every message of it goes, after a confirmation. */
+    clearConversation: "Clear conversation",
+    clearTitle: "Clear this conversation?",
+    clearText: "Every message in this conversation is deleted. This can't be undone.",
+    cleared: "Conversation cleared.",
   },
   memoryCard: {
     remembered: "{{name}} remembered",

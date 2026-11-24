@@ -1916,6 +1916,10 @@ export type ChannelEvent =
     }
   /** A message was unpinned. */
   | { type: "message.unpinned"; channelId: string; messageId: string }
+  /** A message of a DM was deleted: it leaves the conversation for everyone in it. */
+  | { type: "message.deleted"; channelId: string; messageId: string }
+  /** A whole DM was cleared: every message of it is deleted at once. */
+  | { type: "dm.cleared"; channelId: string; deleted: number }
   /** A comment on a picture, a video or a PDF was resolved (or opened again: `resolved` null), ADR 0208. */
   | {
       type: "message.resolved";

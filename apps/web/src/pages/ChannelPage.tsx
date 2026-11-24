@@ -2880,6 +2880,9 @@ function ChannelView({
                                   channelId={channel.id}
                                   runVisible={runVisible}
                                   dmPersonId={thread ? undefined : chrome?.dmPersonId}
+                                  isDm={Boolean(
+                                    chrome?.dmAgentId || chrome?.dmPersonId || thread?.channelKind === "dm",
+                                  )}
                                   consultGroups={consultGroups}
                                   seenId={thread ? null : seenId}
                                   marks={contextMarkIds}
@@ -3364,6 +3367,7 @@ const Timeline = memo(function Timeline({
   channelId,
   runVisible,
   dmPersonId,
+  isDm = false,
   consultGroups,
   seenId = null,
   marks,
@@ -3383,6 +3387,8 @@ const Timeline = memo(function Timeline({
   runVisible: { current: (r: { threadId: string | null; provisional?: boolean }) => boolean };
   /** A DM with this person: my turns' time lines keep the slot of their face (`SeenMark`). */
   dmPersonId?: string;
+  /** A direct conversation: its messages carry "Delete message" in their menu. */
+  isDm?: boolean;
   /** The agents' questions to other agents: inside the replies that asked, and how their answers draw. */
   consultGroups: ConsultGroups;
   /** My message they read last: their face is its receipt. */
@@ -3574,6 +3580,7 @@ const Timeline = memo(function Timeline({
           lastOfRun={lastByRun.get(m.agentRunId) === item.key}
           run={run}
           answer={answers.has(m.id)}
+          isDm={isDm}
         />
       ) : (
         <TimelineMessage
@@ -3586,6 +3593,7 @@ const Timeline = memo(function Timeline({
           replyContext={item.context}
           lastOfRun={Boolean(m.agentRunId && lastByRun.get(m.agentRunId) === item.key)}
           dmPersonId={dmPersonId}
+          isDm={isDm}
           seen={m.id === seenId}
           helping={m.agentRunId && !isMediaAfterReply(m.meta) ? consultGroups.helping.get(m.agentRunId) : undefined}
           run={run}
@@ -3689,6 +3697,8 @@ function RunBlock({
   lastOfRun?: boolean;
   run?: RunPosition;
   answer?: boolean;
+  /** A direct conversation: its messages carry "Delete message" in their menu. */
+  isDm?: boolean;
 }) {
   const run = useStreams((s) => (message ? undefined : s.runs[runId]));
   const last = useRef<LiveRun | undefined>(undefined);
@@ -4418,6 +4428,7 @@ export const TimelineMessage = memo(function TimelineMessage({
   seenLive,
   lastOfRun = false,
   dmPersonId,
+  isDm = false,
   seen = false,
   helping,
   readOnly = false,
@@ -4440,6 +4451,8 @@ export const TimelineMessage = memo(function TimelineMessage({
   lastOfRun?: boolean;
   /** A DM with this person: my turn's time line keeps the slot of their face (`SeenMark`). */
   dmPersonId?: string;
+  /** A direct conversation: the message's menu carries "Delete message". */
+  isDm?: boolean;
   /** My latest message, which they read: their face in that slot. */
   seen?: boolean;
   /** Posted by a run answering another agent's question from here: "ajudando o Theo · Ver conversa". */
@@ -4677,6 +4690,7 @@ export const TimelineMessage = memo(function TimelineMessage({
     feedback,
     readOnly,
     agentName: agent?.name ?? t("channel.unknownAgent"),
+    isDm,
   });
   // A row with a bar has the same actions in a menu a long press opens on touch (an agent's sticker gets a person's).
   const personBar = (m.author.type === "person" || mediaAfter) && !m.local;

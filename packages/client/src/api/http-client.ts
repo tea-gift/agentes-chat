@@ -1312,6 +1312,11 @@ export function createHttpApi(options: TransportOptions = {}): HttpApi {
       markRead: (orgId, channelId) => request<void>(`${org(orgId)}/channels/${enc(channelId)}/read`, { json: {} }),
       reads: async (orgId, channelId) =>
         (await request<{ reads: DmRead[] }>(`${org(orgId)}/channels/${enc(channelId)}/reads`)).reads,
+      deleteMessage: (orgId, channelId, messageId) =>
+        request<void>(`${org(orgId)}/channels/${enc(channelId)}/messages/${enc(messageId)}`, { method: "DELETE" }),
+      clear: async (orgId, channelId) =>
+        (await request<{ deleted: number }>(`${org(orgId)}/channels/${enc(channelId)}/messages`, { method: "DELETE" }))
+          .deleted,
     },
     sandbox: {
       settings: (orgId) => request<SandboxSettings>(`${org(orgId)}/sandbox-settings`),

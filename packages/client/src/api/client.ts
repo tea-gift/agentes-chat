@@ -1521,6 +1521,10 @@ export interface ApiClient {
     markRead(orgId: string, channelId: string): Promise<void>;
     /** Where the other people of a DM stopped reading ("Visto"); empty for any other channel. */
     reads(orgId: string, channelId: string): Promise<DmRead[]>;
+    /** Deletes one message of a DM (a participant of it; anyone who can post there). */
+    deleteMessage(orgId: string, channelId: string, messageId: string): Promise<void>;
+    /** Clears a whole DM: deletes every message of it; returns how many went. */
+    clear(orgId: string, channelId: string): Promise<number>;
   };
   questions: {
     /** Answers an agent's question with a choice or free text. */

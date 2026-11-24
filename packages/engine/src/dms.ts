@@ -10,12 +10,13 @@ import { publishChannelEvent, publishUserEvent } from "./events";
 import { followsThreadSql, threadReadAtSql } from "./follows";
 import { landedAfterSql } from "./message-place";
 import { type PreviewMeta, previewMediaKind, previewMeta, readableBody } from "./message-preview";
+import { getMessage } from "./messages";
 import { quietNoticeSql } from "./notices";
 import { resolveNotifications, unaskedGroup } from "./notifications";
 import { getMembership, requirePermission } from "./organizations";
 import { accountInUse, closedRefusal } from "./standing";
 
-const { channels, channelMembers, channelReads, messages, agents, users, organizationMembers } = schema;
+const { channels, channelMembers, channelReads, messagePins, messages, agents, users, organizationMembers } = schema;
 
 export type DmTarget = { userId: string } | { agentId: string };
 
@@ -551,4 +552,80 @@ export async function dmAgents(db: Database, orgId: string, channelId: string) {
         isNull(agents.archivedAt),
       ),
     );
+}
+
+/**
+ * Deleting one message, or clearing a whole DM: only a participant of the DM,
+ * and only in a DM (never a channel). A DM is the person's own conversation
+ * with one agent or one person, so deleting there takes the message out of
+ * that conversation's view; it never touches another conversation. The
+ * messages stay soft-deleted (`deletedAt`), so every list that reads the DM —
+ * the conversation itself, the DM list's preview, the brain's context — leaves
+ * them out from here on. Deleting also drops the message's pin, if it had
+ * one, so a deleted message never counts toward the pin limit.
+ */
+
+/** The DM this channel is, for one of its members: not a member (gone), not a DM (`dm.not_dm`), can't post here. */
+async function requireDmForDelete(db: Database, actorId: string, orgId: string, channelId: string) {
+  const [member] = await db
+    .select({ id: channelMembers.id, kind: channels.kind })
+    .from(channelMembers)
+    .innerJoin(channels, eq(channels.id, channelMembers.channelId))
+    .where(
+      and(eq(channelMembers.orgId, orgId), eq(channelMembers.channelId, channelId), eq(channelMembers.userId, actorId)),
+    );
+  if (!member) throw new NotFoundError("Channel not found");
+  if (member.kind !== "dm")
+    throw new ValidationError("Only a direct conversation can be cleared this way", "dm.not_dm");
+  await requirePermission(db, actorId, orgId, "post");
+}
+
+/**
+ * Deletes one message of a DM. The message is gone from the conversation for
+ * everyone in it (`message.deleted` live); already deleted, or of another
+ * conversation, is gone too (404).
+ */
+export async function deleteDmMessage(
+  db: Database,
+  actorId: string,
+  orgId: string,
+  channelId: string,
+  messageId: string,
+  pubsub?: PubSub,
+): Promise<{ deleted: boolean }> {
+  await requireDmForDelete(db, actorId, orgId, channelId);
+  const message = await getMessage(db, orgId, messageId);
+  if (!message || message.channelId !== channelId || message.deletedAt) throw new NotFoundError("Message not found");
+  const [gone] = await db
+    .update(messages)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(messages.id, messageId), eq(messages.orgId, orgId), isNull(messages.deletedAt)))
+    .returning({ id: messages.id });
+  if (!gone) throw new NotFoundError("Message not found");
+  await db.delete(messagePins).where(and(eq(messagePins.orgId, orgId), eq(messagePins.messageId, messageId)));
+  await publishChannelEvent(pubsub, { type: "message.deleted", channelId, messageId });
+  return { deleted: true };
+}
+
+/**
+ * Clears a whole DM: every message of it is deleted at once. The conversation
+ * stays (a new message starts it again), its read state and members untouched.
+ * Returns how many messages went (`dm.cleared` live).
+ */
+export async function clearDm(
+  db: Database,
+  actorId: string,
+  orgId: string,
+  channelId: string,
+  pubsub?: PubSub,
+): Promise<{ deleted: number }> {
+  await requireDmForDelete(db, actorId, orgId, channelId);
+  const gone = await db
+    .update(messages)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(messages.orgId, orgId), eq(messages.channelId, channelId), isNull(messages.deletedAt)))
+    .returning({ id: messages.id });
+  await db.delete(messagePins).where(and(eq(messagePins.orgId, orgId), eq(messagePins.channelId, channelId)));
+  await publishChannelEvent(pubsub, { type: "dm.cleared", channelId, deleted: gone.length });
+  return { deleted: gone.length };
 }

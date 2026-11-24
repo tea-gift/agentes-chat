@@ -1919,6 +1919,9 @@ export const ptBR = {
     unpin: "Desafixar mensagem",
     pinned: "Mensagem fixada.",
     unpinned: "Mensagem desafixada.",
+    /** A DM's message, in its menu: gone from the conversation at once. */
+    deleteMessage: "Excluir mensagem",
+    messageDeleted: "Mensagem excluída.",
     open: "Abrir",
     openInBrowser: "Abrir no navegador",
     download: "Baixar",
@@ -4186,6 +4189,11 @@ export const ptBR = {
     emptyAgent: "Peça para lembrar, esquecer ou trabalhar de outro jeito.",
     opening: "Abrindo a conversa…",
     title: "Mensagem direta com {{name}}",
+    /** A DM header's ⋯: every message of it goes, after a confirmation. */
+    clearConversation: "Limpar conversa",
+    clearTitle: "Limpar esta conversa?",
+    clearText: "Todas as mensagens desta conversa serão excluídas. Não dá para desfazer.",
+    cleared: "Conversa limpa.",
   },
   memoryCard: {
     remembered: "{{name}} lembrou",

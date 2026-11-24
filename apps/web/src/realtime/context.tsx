@@ -60,7 +60,9 @@ import {
   createBrowserLiveConnection,
   desktopPointerOf,
   dismissRun,
+  dropChannelMessages,
   dropLocalVoice,
+  dropMessage,
   dropProvisional,
   emptyStreams,
   expectReply,
@@ -877,6 +879,18 @@ export function useChannelRealtime(orgId: string, channelId: string, enabled: bo
       // Someone pinned or unpinned a message: its "Fixar" / "Desafixar" and the pins list follow.
       if (event.type === "message.pinned" || event.type === "message.unpinned") {
         cachePinned(qc, orgId, channelId, event.messageId, event.type === "message.pinned");
+        void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
+      }
+      // Someone deleted a message of a DM: it leaves the conversation here too; the DM list follows (its preview).
+      if (event.type === "message.deleted") {
+        dropMessage(qc, orgId, channelId, event.messageId);
+        void qc.invalidateQueries({ queryKey: keys.dms(orgId) });
+        void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
+      }
+      // Someone cleared a whole DM: every message leaves here too; the DM list follows (its preview).
+      if (event.type === "dm.cleared") {
+        dropChannelMessages(qc, orgId, channelId);
+        void qc.invalidateQueries({ queryKey: keys.dms(orgId) });
         void qc.invalidateQueries({ queryKey: keys.pins(orgId, channelId) });
       }
       // A comment on a picture, a video or a PDF was resolved or opened again (ADR 0208): its pin and line follow.

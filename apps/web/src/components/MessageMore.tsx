@@ -1,4 +1,4 @@
-import { type Message, usePinMessage } from "@agenteschat/client";
+import { type Message, useDeleteDmMessage, usePinMessage } from "@agenteschat/client";
 import { messagePath } from "@agenteschat/client/lib/message-links";
 import { can } from "@agenteschat/client/lib/permissions";
 import { listedText } from "@agenteschat/client/lib/voice";
@@ -97,7 +97,7 @@ export function PersonMessageActions({
 export function useMessageMenu(
   message: Message,
   channelName: string,
-  options: { feedback?: boolean; agentName?: string; readOnly?: boolean } = {},
+  options: { feedback?: boolean; agentName?: string; readOnly?: boolean; isDm?: boolean } = {},
 ) {
   const { t } = useTranslation();
   const { org } = useOrg();
@@ -110,6 +110,7 @@ export function useMessageMenu(
   const [picking, setPicking] = useState(false);
   const labels = useEmojiLabels();
   const pin = usePinMessage(org.id);
+  const del = useDeleteDmMessage(org.id);
   // An agent's chart can go on a board as a widget (ADR 0135): the first one the message has that reads as one.
   const chart = useMemo(
     () =>
@@ -215,6 +216,24 @@ export function useMessageMenu(
           ] satisfies MenuEntry[])
         : []),
       ...(words ? [wiki(text)] : []),
+      // A DM's own message, gone at once: only a DM has it, and only who may post there.
+      ...(options.isDm && !options.readOnly && can(org, "post")
+        ? ([
+            { kind: "separator" },
+            {
+              kind: "item",
+              id: "delete-message",
+              label: t("contextMenu.deleteMessage"),
+              icon: "trash",
+              danger: true,
+              run: () =>
+                del.mutate(
+                  { channelId: message.channelId, messageId: message.id },
+                  { onSuccess: () => toast.show(t("contextMenu.messageDeleted")) },
+                ),
+            },
+          ] satisfies MenuEntry[])
+        : []),
     ];
   };
   const onContextMenu = contextMenuHandler((e) => entries(selectedTextAt(e.target)));

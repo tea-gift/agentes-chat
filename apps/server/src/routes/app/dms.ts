@@ -1,4 +1,12 @@
-import { dmReads, listDms, markChannelRead, openDm, setChannelMuted } from "@agenteschat/engine";
+import {
+  clearDm,
+  deleteDmMessage,
+  dmReads,
+  listDms,
+  markChannelRead,
+  openDm,
+  setChannelMuted,
+} from "@agenteschat/engine";
 import { createRoute, z } from "@hono/zod-openapi";
 import {
   type AppDeps,
@@ -166,6 +174,43 @@ export function dmRoutes(deps: AppDeps) {
     async (c) => {
       const { orgId, channelId } = c.req.valid("param");
       return c.json({ reads: await dmReads(db, c.get("user").id, orgId, channelId) }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/organizations/{orgId}/channels/{channelId}/messages/{messageId}",
+      tags,
+      security,
+      summary: "Delete one message of a DM (a participant of it; anyone who can post there)",
+      description:
+        "Only a direct conversation: a channel answers 400 (`dm.not_dm`). The message is gone from the conversation for everyone in it (`message.deleted` live); its pin, if it had one, goes with it. Already deleted, or of another conversation, is 404.",
+      request: { params: OrgParams.extend({ channelId: z.uuid(), messageId: z.uuid() }) },
+      responses: { 204: noContent[204], ...errors },
+    }),
+    async (c) => {
+      const { orgId, channelId, messageId } = c.req.valid("param");
+      await deleteDmMessage(db, c.get("user").id, orgId, channelId, messageId, adapters.pubsub);
+      return c.body(null, 204);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/organizations/{orgId}/channels/{channelId}/messages",
+      tags,
+      security,
+      summary: "Clear a whole DM: delete every message of it (a participant of it; anyone who can post there)",
+      description:
+        "Only a direct conversation: a channel answers 400 (`dm.not_dm`). The conversation itself stays, so a new message starts it again. Members hear `dm.cleared` live. `deleted` is how many messages went.",
+      request: { params: OrgParams.extend({ channelId: z.uuid() }) },
+      responses: { 200: json(z.object({ deleted: z.number() })), ...errors },
+    }),
+    async (c) => {
+      const { orgId, channelId } = c.req.valid("param");
+      return c.json(await clearDm(db, c.get("user").id, orgId, channelId, adapters.pubsub), 200);
     },
   );
 
