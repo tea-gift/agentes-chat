@@ -34,7 +34,23 @@ COPY packages/providers/package.json packages/providers/package.json
 COPY packages/setup/package.json packages/setup/package.json
 COPY packages/tokens/package.json packages/tokens/package.json
 COPY packages/ui/package.json packages/ui/package.json
-RUN bun install --production --frozen-lockfile
+# Production deps for the server and the shared packages only: the desktop,
+# mobile and web apps' dependencies (React Native, React, Tauri, …) never run
+# in this image — the web app ships as the static dist built above.
+RUN bun install --production --frozen-lockfile \
+      --filter '@agenteschat/server' \
+      --filter '@agenteschat/adapters' \
+      --filter '@agenteschat/client' \
+      --filter '@agenteschat/config' \
+      --filter '@agenteschat/db' \
+      --filter '@agenteschat/engine' \
+      --filter '@agenteschat/i18n' \
+      --filter '@agenteschat/live' \
+      --filter '@agenteschat/modules' \
+      --filter '@agenteschat/providers' \
+      --filter '@agenteschat/setup' \
+      --filter '@agenteschat/tokens' \
+      --filter '@agenteschat/ui'
 
 FROM oven/bun:1.4.4-slim AS runtime
 WORKDIR /app
