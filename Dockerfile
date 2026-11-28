@@ -64,8 +64,9 @@ COPY --from=build --chown=bun:bun /app/apps/server ./apps/server
 COPY --from=build --chown=bun:bun /app/packages ./packages
 COPY --from=build --chown=bun:bun /app/apps/web/dist ./apps/web/dist
 COPY --from=build --chown=bun:bun /app/tsconfig.base.json ./tsconfig.base.json
-# apps/server/src/app.ts imports the root compose file as text at runtime.
+# apps/server/src/app.ts imports these two root files as text at runtime.
 COPY --from=build --chown=bun:bun /app/docker-compose.yml ./docker-compose.yml
+COPY --from=build --chown=bun:bun /app/install.sh ./install.sh
 # The root filesystem can be read-only: the server writes only to /tmp and FILES_DIR, and the
 # base image already turns off Bun's transpiler cache (BUN_RUNTIME_TRANSPILER_CACHE_PATH=0).
 ENV NODE_ENV=production \
