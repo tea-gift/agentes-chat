@@ -42,3 +42,15 @@ jobs:
             ghcr.io/tea-gift/agentes-chat:dev-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The GHCR package is private and the host's token can't read packages,
+      # so the deployable copy travels as a workflow artifact: the host runs
+      # `gh run download` and `docker load`.
+      - name: Export image as artifact
+        run: |
+          docker save ghcr.io/tea-gift/agentes-chat:dev-${{ github.sha }} | gzip > agentes-image.tar.gz
+          ls -lh agentes-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentes-image
+          path: agentes-image.tar.gz
+          retention-days: 7
