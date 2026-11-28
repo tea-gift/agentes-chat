@@ -47,8 +47,13 @@ jobs:
       # `gh run download` and `docker load`.
       - name: Export image as artifact
         run: |
+          set -o pipefail
+          # buildx pushes straight to the registry; pull the image back so
+          # docker save has something local to write.
+          docker pull ghcr.io/tea-gift/agentes-chat:dev-${{ github.sha }}
           docker save ghcr.io/tea-gift/agentes-chat:dev-${{ github.sha }} | gzip > agentes-image.tar.gz
           ls -lh agentes-image.tar.gz
+          test $(stat -c%s agentes-image.tar.gz) -gt 10000000
       - uses: actions/upload-artifact@v4
         with:
           name: agentes-image
